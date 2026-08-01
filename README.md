@@ -29,6 +29,12 @@ Values can also be supplied with `FWR_SLEEPER_USERNAME`, `FWR_SLEEPER_LEAGUE_ID`
 and `FWR_DB_PATH`. Precedence is CLI, environment (including an optional development `.env`),
 user config, then defaults.
 
+For local development, copy `.env.example` to `.env` and uncomment only the overrides you
+need. The example is intentionally inert: uncommented environment values take precedence over
+the configured user, and the default database remains in the XDG user data directory. If you
+override `FWR_DB_PATH`, use an absolute path so commands remain independent of the current
+working directory.
+
 ## Commands
 
 ```console

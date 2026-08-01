@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol, cast
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from fantasy_war_room.errors import NotFoundError, ProviderError
 
@@ -29,16 +29,19 @@ class SleeperClient:
         self.client.close()
 
     @retry(
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
+        retry=retry_if_exception(lambda exc: _is_transient(exc)),
         wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
         stop=stop_after_attempt(3),
         reraise=True,
     )
+    def _get_with_retries(self, path: str) -> Any:
+        response = self.client.get(path)
+        response.raise_for_status()
+        return response.json()
+
     def _get(self, path: str) -> Any:
         try:
-            response = self.client.get(path)
-            response.raise_for_status()
-            return response.json()
+            return self._get_with_retries(path)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise NotFoundError(f"Sleeper resource was not found: {path}") from exc
@@ -66,3 +69,12 @@ class SleeperClient:
 
     def get_draft_picks(self, draft_id: str) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self._get(f"/draft/{draft_id}/picks"))
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or 500 <= status < 600
+    return False

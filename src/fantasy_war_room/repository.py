@@ -9,7 +9,7 @@ import duckdb
 
 from fantasy_war_room.models import Snapshot
 
-SCHEMA = """
+MIGRATION_1 = """
 CREATE TABLE IF NOT EXISTS draft_snapshots (
  snapshot_id VARCHAR PRIMARY KEY, league_id VARCHAR NOT NULL, draft_id VARCHAR NOT NULL,
  observed_at TIMESTAMPTZ NOT NULL, source_updated_at TIMESTAMPTZ,
@@ -25,6 +25,20 @@ CREATE TABLE IF NOT EXISTS draft_snapshot_picks (
 );
 """
 
+MIGRATION_2 = """
+CREATE TABLE draft_snapshots_v2 (
+ snapshot_id VARCHAR PRIMARY KEY, league_id VARCHAR NOT NULL, draft_id VARCHAR NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL, source_updated_at TIMESTAMPTZ,
+ payload_hash VARCHAR NOT NULL, pick_count INTEGER NOT NULL,
+ league_payload JSON NOT NULL, draft_payload JSON NOT NULL, picks_payload JSON NOT NULL
+);
+INSERT INTO draft_snapshots_v2 SELECT * FROM draft_snapshots;
+DROP TABLE draft_snapshots;
+ALTER TABLE draft_snapshots_v2 RENAME TO draft_snapshots;
+"""
+
+MIGRATIONS = ((1, MIGRATION_1), (2, MIGRATION_2))
+
 
 class SnapshotRepository:
     def __init__(self, path: Path) -> None:
@@ -33,7 +47,35 @@ class SnapshotRepository:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with duckdb.connect(str(self.path)) as connection:
-            connection.execute(SCHEMA)
+            connection.begin()
+            try:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                    "version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                )
+                legacy_schema = connection.execute(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'main' AND table_name = 'draft_snapshots'"
+                ).fetchone()
+                applied = {
+                    int(row[0])
+                    for row in connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    ).fetchall()
+                }
+                if legacy_schema and 1 not in applied:
+                    connection.execute("INSERT INTO schema_migrations (version) VALUES (1)")
+                    applied.add(1)
+                for version, sql in MIGRATIONS:
+                    if version not in applied:
+                        connection.execute(sql)
+                        connection.execute(
+                            "INSERT INTO schema_migrations (version) VALUES (?)", [version]
+                        )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def latest_hash(self, draft_id: str) -> str | None:
         with duckdb.connect(str(self.path)) as connection:
