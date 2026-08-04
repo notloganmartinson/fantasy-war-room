@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,15 +17,31 @@ from fantasy_war_room.config import (
     save_settings,
 )
 from fantasy_war_room.errors import ConfigurationError, ExitCode, FwrError, NotFoundError
-from fantasy_war_room.rendering import diagnostic, emit_json, render_leagues, stdout
-from fantasy_war_room.repository import SnapshotRepository
+from fantasy_war_room.intelligence import import_rankings, normalize_name, sync_players
+from fantasy_war_room.rendering import (
+    diagnostic,
+    emit_json,
+    render_board,
+    render_leagues,
+    render_players,
+    render_ranking_issues,
+    render_rankings,
+    stdout,
+)
+from fantasy_war_room.repository import IntelligenceRepository, SnapshotRepository
 from fantasy_war_room.services import discover as discover_leagues
 from fantasy_war_room.services import parse_timestamp, select_draft
 from fantasy_war_room.services import sync as sync_draft
 from fantasy_war_room.services import watch as watch_draft
 from fantasy_war_room.sleeper import SleeperClient
 
-app = typer.Typer(help="Local-first Sleeper draft state history.", no_args_is_help=True)
+app = typer.Typer(
+    help="Local-first, time-aware fantasy football decision data.", no_args_is_help=True
+)
+players_app = typer.Typer(help="Synchronize and search the local player directory.")
+rankings_app = typer.Typer(help="Import and inspect ranking snapshots.")
+app.add_typer(players_app, name="players")
+app.add_typer(rankings_app, name="rankings")
 
 
 def _run[T](
@@ -267,3 +284,168 @@ def watch(
         diagnostic("Stopped.")
     finally:
         client.close()
+
+
+@players_app.command("sync")
+def players_sync(
+    force: bool = typer.Option(False, "--force", help="Bypass the 24-hour player cache."),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Synchronize the Sleeper NFL player directory."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        ensure_directories(settings)
+        client = _client(settings)
+        try:
+            snapshot, created, source = sync_players(
+                client,
+                IntelligenceRepository(settings.db_path),
+                Path(app_dirs().user_cache_dir),
+                force=force,
+            )
+        finally:
+            client.close()
+        return {"source": source, "created": created, "snapshot": snapshot}
+
+    _run(
+        "players sync",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} player directory "
+            f"from {result['source']}"
+        ),
+    )
+
+
+@players_app.command("search")
+def players_search(
+    query: str = typer.Argument(...),
+    position: str | None = typer.Option(None),
+    team: str | None = typer.Option(None),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Search the local player directory as of a timestamp."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
+        results = IntelligenceRepository(settings.db_path).search_players(
+            normalize_name(query), at, position, team
+        )
+        return {"as_of": at, "players": results}
+
+    _run("players search", json_output, operation, lambda result: render_players(result["players"]))
+
+
+@rankings_app.command("import")
+def rankings_import(
+    file: Path = typer.Argument(...),
+    source: str = typer.Option(...),
+    season: str = typer.Option(...),
+    scoring: str = typer.Option(...),
+    league_size: int = typer.Option(..., "--league-size"),
+    source_version: str | None = typer.Option(None, "--source-version"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import an immutable ranking, ADP, or projection CSV snapshot."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        snapshot, created = import_rankings(
+            file,
+            IntelligenceRepository(settings.db_path),
+            source,
+            season,
+            scoring,
+            league_size,
+            source_version,
+            parse_timestamp(observed_at) if observed_at else None,
+        )
+        return {"created": created, "snapshot": snapshot}
+
+    _run(
+        "rankings import",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} ranking snapshot "
+            f"{result['snapshot'].ranking_snapshot_id}"
+        ),
+    )
+
+
+@rankings_app.command("list")
+def rankings_list(
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List ranking snapshots."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        return {"snapshots": IntelligenceRepository(settings.db_path).ranking_snapshots()}
+
+    _run(
+        "rankings list",
+        json_output,
+        operation,
+        lambda result: render_rankings(result["snapshots"]),
+    )
+
+
+@rankings_app.command("unresolved")
+def rankings_unresolved(
+    snapshot_id: str | None = typer.Option(None, "--snapshot-id"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List unresolved and ambiguous ranking rows."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        return {
+            "issues": IntelligenceRepository(settings.db_path).ranking_issues(snapshot_id),
+            "snapshot_id": snapshot_id,
+        }
+
+    _run(
+        "rankings unresolved",
+        json_output,
+        operation,
+        lambda result: render_ranking_issues(result["issues"]),
+    )
+
+
+@app.command("board")
+def board(
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    source: str | None = typer.Option(None),
+    position: str | None = typer.Option(None),
+    limit: int = typer.Option(100, min=1),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Render the available-player board entirely from local snapshots."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
+        results = IntelligenceRepository(settings.db_path).board(
+            at,
+            draft_id,
+            None if draft_id else settings.sleeper_league_id,
+            source,
+            position,
+            limit,
+        )
+        return {"as_of": at, "players": results}
+
+    _run("board", json_output, operation, lambda result: render_board(result["players"]))

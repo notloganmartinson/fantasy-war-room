@@ -22,6 +22,7 @@ def test_all_adapter_methods(api: Any, sleeper_payloads: dict[str, Any]) -> None
     assert client.get_league_drafts("l1")[0]["draft_id"] == "d1"
     assert client.get_draft("d1")["draft_id"] == "d1"
     assert client.get_draft_picks("d1")[0]["pick_no"] == 1
+    assert client.get_nfl_players()["p1"]["position"] == "QB"
     client.close()
 
 

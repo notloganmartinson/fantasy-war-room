@@ -17,6 +17,10 @@ class SleeperProvider(Protocol):
     def get_draft_picks(self, draft_id: str) -> list[dict[str, Any]]: ...
 
 
+class SleeperPlayerProvider(Protocol):
+    def get_nfl_players(self) -> dict[str, dict[str, Any]]: ...
+
+
 class SleeperClient:
     def __init__(self, base_url: str, timeout: float) -> None:
         self.client = httpx.Client(
@@ -69,6 +73,9 @@ class SleeperClient:
 
     def get_draft_picks(self, draft_id: str) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self._get(f"/draft/{draft_id}/picks"))
+
+    def get_nfl_players(self) -> dict[str, dict[str, Any]]:
+        return cast(dict[str, dict[str, Any]], self._get("/players/nfl"))
 
 
 def _is_transient(exc: BaseException) -> bool:

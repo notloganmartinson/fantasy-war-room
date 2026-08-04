@@ -80,6 +80,20 @@ def register_sleeper(
     api.get(f"{base}/league/l1/drafts").mock(return_value=_response(200, [payloads["draft"]]))
     api.get(f"{base}/draft/d1").mock(return_value=_response(200, payloads["draft"]))
     api.get(f"{base}/draft/d1/picks").mock(return_value=_response(200, picks or payloads["picks"]))
+    api.get(f"{base}/players/nfl").mock(
+        return_value=_response(
+            200,
+            {
+                "p1": {
+                    "first_name": "A",
+                    "last_name": "Player",
+                    "position": "QB",
+                    "team": "BUF",
+                    "fantasy_positions": ["QB"],
+                }
+            },
+        )
+    )
 
 
 def _response(status: int, payload: Any) -> Any:
