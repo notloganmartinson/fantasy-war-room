@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from fantasy_war_room.errors import ProviderError
+from fantasy_war_room.errors import NotFoundError, ProviderError
 from fantasy_war_room.sleeper import SleeperClient
 
 
@@ -22,11 +22,76 @@ def test_all_adapter_methods(api: Any, sleeper_payloads: dict[str, Any]) -> None
     assert client.get_league_drafts("l1")[0]["draft_id"] == "d1"
     assert client.get_draft("d1")["draft_id"] == "d1"
     assert client.get_draft_picks("d1")[0]["pick_no"] == 1
+    assert client.get_nfl_players()["p1"]["position"] == "QB"
     client.close()
 
 
 @respx.mock(base_url="https://api.sleeper.app/v1")
 def test_network_failure_is_provider_error(api: Any) -> None:
-    api.get("https://api.sleeper.app/v1/user/alice").mock(side_effect=httpx.ConnectError("offline"))
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        side_effect=httpx.ConnectError("offline")
+    )
     with pytest.raises(ProviderError):
         SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")
+    assert route.call_count == 3
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_timeout_is_retried_and_can_recover(api: Any) -> None:
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        side_effect=[
+            httpx.ReadTimeout("slow response"),
+            httpx.Response(200, json={"user_id": "u1"}),
+        ]
+    )
+
+    assert SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")["user_id"] == "u1"
+    assert route.call_count == 2
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_transient_http_status_is_retried_and_can_recover(api: Any, status: int) -> None:
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        side_effect=[
+            httpx.Response(status, json={"error": "temporary"}),
+            httpx.Response(200, json={"user_id": "u1"}),
+        ]
+    )
+
+    assert SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")["user_id"] == "u1"
+    assert route.call_count == 2
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_exhausted_transient_http_status_is_provider_error(api: Any) -> None:
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        return_value=httpx.Response(503, json={"error": "temporary"})
+    )
+
+    with pytest.raises(ProviderError, match="HTTP 503"):
+        SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")
+    assert route.call_count == 3
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_non_transient_client_error_is_not_retried(api: Any, status: int) -> None:
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        return_value=httpx.Response(status, json={"error": "bad request"})
+    )
+
+    with pytest.raises(ProviderError):
+        SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")
+    assert route.call_count == 1
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_not_found_is_not_retried(api: Any) -> None:
+    route = api.get("https://api.sleeper.app/v1/user/alice").mock(
+        return_value=httpx.Response(404, json={"error": "missing"})
+    )
+
+    with pytest.raises(NotFoundError):
+        SleeperClient("https://api.sleeper.app/v1", 0.1).get_user("alice")
+    assert route.call_count == 1

@@ -1,0 +1,4 @@
+player_name,sleeper_id,position,team,overall_rank,positional_rank,adp,adp_sd,projected_points
+Alpha Quarterback,p1,QB,ARI,1,QB1,2.5,0.8,300.0
+Bravo Receiver,,WR,BUF,2,WR1,3.5,1.2,250.0
+Unknown Player,,RB,SEA,3,RB1,4.5,1.5,220.0

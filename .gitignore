@@ -9,8 +9,8 @@ wheels/
 # Virtual environments
 .venv
 .env
-data/*.duckdb
-data/*.wal
+data/*.duckdb*
+data/*.wal*
 data/raw/
 .coverage
 htmlcov/

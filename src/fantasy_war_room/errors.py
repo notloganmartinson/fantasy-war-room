@@ -33,6 +33,11 @@ class InputError(FwrError):
         super().__init__(code, message, ExitCode.INVALID_INPUT, details)
 
 
+class DataIntegrityError(FwrError):
+    def __init__(self, message: str, details: dict[str, Any]) -> None:
+        super().__init__("player_identity_conflict", message, ExitCode.INVALID_INPUT, details)
+
+
 class ConfigurationError(FwrError):
     def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(code, message, ExitCode.CONFIGURATION, details)

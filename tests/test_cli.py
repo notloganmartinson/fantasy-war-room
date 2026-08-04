@@ -89,3 +89,81 @@ def test_cli_runs_outside_repository(runner: CliRunner, xdg: Path, tmp_path: Pat
     database = Path(parse_output(result)["data"]["database"])
     assert database.is_absolute()
     assert str(database).startswith(str(xdg.parent / "data"))
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_m2_json_commands_and_cache_work_outside_repository(
+    api: Any, runner: CliRunner, xdg: Path, sleeper_payloads: dict[str, Any]
+) -> None:
+    from conftest import parse_output, register_sleeper
+
+    from fantasy_war_room.cli import app
+
+    register_sleeper(api, sleeper_payloads)
+    player_route = api.routes[-1]
+    first = runner.invoke(app, ["players", "sync", "--timings", "--json"])
+    cached = runner.invoke(app, ["players", "sync", "--json"])
+    forced = runner.invoke(app, ["players", "sync", "--force", "--json"])
+
+    assert first.exit_code == cached.exit_code == forced.exit_code == 0
+    assert parse_output(first)["command"] == "players sync"
+    assert parse_output(first)["data"]["source"] == "network"
+    assert set(parse_output(first)["data"]["timings_seconds"]) == {
+        "cache_read_or_network_download",
+        "parsing_and_normalization",
+        "identity_resolution",
+        "database_persistence",
+        "total",
+    }
+    assert parse_output(cached)["data"] == {
+        **parse_output(cached)["data"],
+        "source": "cache",
+    }
+    assert parse_output(forced)["data"]["source"] == "network"
+    assert player_route.call_count == 2
+
+    search = runner.invoke(app, ["players", "search", "a player", "--json"])
+    assert search.exit_code == 0
+    search_body = parse_output(search)
+    assert search_body["status"] == "success" and search_body["error"] is None
+    assert search_body["data"]["players"][0]["sleeper_player_id"] == "p1"
+
+    fixture = Path(__file__).parent / "fixtures" / "synthetic_rankings.csv"
+    imported = runner.invoke(
+        app,
+        [
+            "rankings",
+            "import",
+            str(fixture),
+            "--source",
+            "fixture",
+            "--season",
+            "2026",
+            "--scoring",
+            "ppr",
+            "--league-size",
+            "10",
+            "--json",
+        ],
+    )
+    assert imported.exit_code == 0
+    assert parse_output(imported)["command"] == "rankings import"
+    listed = runner.invoke(app, ["rankings", "list", "--json"])
+    unresolved = runner.invoke(app, ["rankings", "unresolved", "--json"])
+    assert parse_output(listed)["data"]["snapshots"][0]["source"] == "fixture"
+    assert parse_output(unresolved)["data"]["issues"]
+
+
+def test_board_json_is_stable_and_offline(runner: CliRunner, xdg: Path) -> None:
+    from conftest import parse_output
+
+    from fantasy_war_room.cli import app
+
+    result = runner.invoke(app, ["board", "--json"])
+    assert result.exit_code == 0
+    assert parse_output(result) == {
+        "command": "board",
+        "data": {"as_of": parse_output(result)["data"]["as_of"], "players": []},
+        "error": None,
+        "status": "success",
+    }
