@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
+import tempfile
+import time
 import unicodedata
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -32,15 +37,20 @@ def sync_players(
     cache_dir: Path,
     force: bool = False,
     observed_at: datetime | None = None,
+    timings: dict[str, float] | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[PlayerDirectorySnapshot, bool, str]:
+    started = time.perf_counter()
     now = observed_at or datetime.now(UTC)
     cache_path = cache_dir.expanduser().resolve() / "sleeper" / "players-nfl.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     source = "network"
+    io_started = time.perf_counter()
     if not force and cache_path.exists():
         modified = datetime.fromtimestamp(cache_path.stat().st_mtime, UTC)
         if now - modified < CACHE_MAX_AGE:
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            with cache_path.open(encoding="utf-8") as cache_file:
+                payload = json.load(cache_file)
             fetched_at = modified
             source = "cache"
         else:
@@ -51,19 +61,77 @@ def sync_players(
         fetched_at = now
     if not isinstance(payload, dict):
         raise InputError("invalid_player_payload", "Sleeper player directory must be an object")
-    canonical_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    io_elapsed = time.perf_counter() - io_started
     if source == "network":
-        cache_path.write_text(canonical_json + "\n", encoding="utf-8")
+        payload_hash = _write_canonical_cache(cache_path, payload)
+    else:
+        payload_hash = _canonical_cache_hash(cache_path)
+    normalization_started = time.perf_counter()
     players = [_canonical_player(str(player_id), raw) for player_id, raw in sorted(payload.items())]
+    normalization_elapsed = time.perf_counter() - normalization_started
+    del payload
     snapshot = PlayerDirectorySnapshot(
         snapshot_id=str(uuid4()),
         observed_at=now,
         fetched_at=fetched_at,
-        payload_hash=canonical_hash(payload),
+        payload_hash=payload_hash,
         player_count=len(players),
         raw_cache_path=str(cache_path),
     )
-    return snapshot, repository.insert_player_directory(snapshot, players), source
+    repository_timings: dict[str, float] = {}
+    created = repository.insert_player_directory(snapshot, players, repository_timings, diagnostics)
+    if timings is not None:
+        timings.update(
+            {
+                "cache_read_or_network_download": io_elapsed,
+                "parsing_and_normalization": normalization_elapsed,
+                "identity_resolution": repository_timings.get("identity_resolution", 0.0),
+                "database_persistence": repository_timings.get("database_persistence", 0.0),
+                "total": time.perf_counter() - started,
+            }
+        )
+    return snapshot, created, source
+
+
+class _HashingTextWriter:
+    def __init__(self, raw: Any, digest: Any) -> None:
+        self.raw = raw
+        self.digest = digest
+
+    def write(self, value: str) -> int:
+        encoded = value.encode("utf-8")
+        self.digest.update(encoded)
+        return self.raw.write(encoded)
+
+
+def _write_canonical_cache(path: Path, payload: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "wb") as raw:
+            writer = _HashingTextWriter(raw, digest)
+            json.dump(payload, writer, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            raw.write(b"\n")
+        os.replace(temporary_name, path)
+    except Exception:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary_name)
+        raise
+    return digest.hexdigest()
+
+
+def _canonical_cache_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as cache_file:
+        pending = b""
+        while chunk := cache_file.read(1024 * 1024):
+            pending += chunk
+            if len(pending) > 1:
+                digest.update(pending[:-1])
+                pending = pending[-1:]
+    if pending and pending != b"\n":
+        digest.update(pending)
+    return digest.hexdigest()
 
 
 def _canonical_player(player_id: str, raw: Any) -> dict[str, Any]:

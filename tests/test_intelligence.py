@@ -7,9 +7,8 @@ from typing import Any
 import duckdb
 import pytest
 
-from fantasy_war_room.errors import InputError
+from fantasy_war_room.errors import DataIntegrityError, InputError
 from fantasy_war_room.intelligence import import_rankings, normalize_name, sync_players
-from fantasy_war_room.models import PlayerDirectorySnapshot
 from fantasy_war_room.repository import IntelligenceRepository, MigrationError
 from fantasy_war_room.services import sync
 
@@ -77,6 +76,74 @@ def player_payload() -> dict[str, dict[str, Any]]:
     }
 
 
+def test_bulk_player_ingestion_preserves_identity_mapping_and_observations(
+    tmp_path: Path,
+) -> None:
+    repository = IntelligenceRepository(tmp_path / "bulk.duckdb")
+    payload = {
+        f"p{index}": {
+            "first_name": f"First{index}",
+            "last_name": f"Last{index}",
+            "position": "WR",
+            "fantasy_positions": ["WR"],
+            "team": "ARI",
+            "gsis_id": f"g{index}",
+        }
+        for index in range(2_000)
+    }
+    timings: dict[str, float] = {}
+    first, created, _ = sync_players(
+        PlayerProvider(payload),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        timings=timings,
+    )
+    with duckdb.connect(str(repository.path)) as connection:
+        identities_before = dict(
+            connection.execute(
+                "SELECT provider_player_id, canonical_player_id FROM player_provider_ids "
+                "WHERE provider = 'sleeper'"
+            ).fetchall()
+        )
+        counts = tuple(
+            connection.execute(
+                "SELECT (SELECT count(*) FROM canonical_players), "
+                "(SELECT count(*) FROM player_provider_ids), "
+                "(SELECT count(*) FROM player_observations)"
+            ).fetchone()
+        )
+    payload["p0"] = {**payload["p0"], "team": "ATL"}
+    second, changed, _ = sync_players(
+        PlayerProvider(payload),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    with duckdb.connect(str(repository.path)) as connection:
+        identities_after = dict(
+            connection.execute(
+                "SELECT provider_player_id, canonical_player_id FROM player_provider_ids "
+                "WHERE provider = 'sleeper'"
+            ).fetchall()
+        )
+        observations = connection.execute("SELECT count(*) FROM player_observations").fetchone()
+    assert created is changed is True
+    assert first.snapshot_id != second.snapshot_id
+    assert counts == (2_000, 4_000, 2_000)
+    assert identities_before == identities_after
+    assert observations == (4_000,)
+    assert set(timings) == {
+        "cache_read_or_network_download",
+        "parsing_and_normalization",
+        "identity_resolution",
+        "database_persistence",
+        "total",
+    }
+
+
 def test_player_cache_dedup_force_and_a_b_a(tmp_path: Path) -> None:
     repository = IntelligenceRepository(tmp_path / "history.duckdb")
     provider = PlayerProvider(player_payload())
@@ -141,6 +208,159 @@ def test_player_metadata_search_is_as_of(tmp_path: Path) -> None:
     )
     assert old[0].team == "ARI"
     assert new[0].team == "ATL" and new[0].injury_status == "Questionable"
+
+
+def test_source_collisions_are_preserved_and_resolved_safely(tmp_path: Path) -> None:
+    repository = IntelligenceRepository(tmp_path / "collisions.duckdb")
+    payload = {
+        "same-1": {
+            "full_name": "Same Player",
+            "position": "S",
+            "team": None,
+            "espn_id": "shared-safe",
+        },
+        "same-2": {
+            "full_name": "Same Player",
+            "position": "DB",
+            "team": "BUF",
+            "espn_id": "shared-safe",
+        },
+        "unrelated-1": {
+            "full_name": "Alpha Different",
+            "position": "WR",
+            "sportradar_id": "shared-unsafe",
+        },
+        "unrelated-2": {
+            "full_name": "Bravo Other",
+            "position": "CB",
+            "sportradar_id": "shared-unsafe",
+        },
+        "duplicate-row-1": {"full_name": "Identical Row", "position": "TE"},
+        "duplicate-row-2": {"full_name": "Identical Row", "position": "TE"},
+    }
+    diagnostics: dict[str, Any] = {}
+    sync_players(
+        PlayerProvider(payload),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=datetime(2026, 6, 1, tzinfo=UTC),
+        diagnostics=diagnostics,
+    )
+    with duckdb.connect(str(repository.path)) as connection:
+        observations = connection.execute(
+            "SELECT provider_player_id, canonical_player_id FROM player_observations "
+            "ORDER BY provider_player_id"
+        ).fetchall()
+        sleeper_mappings = connection.execute(
+            "SELECT provider_player_id, canonical_player_id FROM player_provider_ids "
+            "WHERE provider = 'sleeper' ORDER BY provider_player_id"
+        ).fetchall()
+        unsafe_mapping = connection.execute(
+            "SELECT count(*) FROM player_provider_ids WHERE provider = 'sportradar' "
+            "AND provider_player_id = 'shared-unsafe'"
+        ).fetchone()
+    canonical_by_source = dict(observations)
+    assert len(observations) == len(sleeper_mappings) == 6
+    assert canonical_by_source["same-1"] == canonical_by_source["same-2"]
+    assert canonical_by_source["unrelated-1"] != canonical_by_source["unrelated-2"]
+    assert canonical_by_source["duplicate-row-1"] != canonical_by_source["duplicate-row-2"]
+    assert unsafe_mapping == (0,)
+    assert diagnostics["merged_collision_count"] == 1
+    assert diagnostics["quarantined_collision_count"] == 1
+
+    rankings = tmp_path / "collision-rankings.csv"
+    rankings.write_text(
+        "player_name,sleeper_id,position,overall_rank\nSame Player,same-2,DB,1\n",
+        encoding="utf-8",
+    )
+    ranking, _ = import_rankings(
+        rankings,
+        repository,
+        "collision-fixture",
+        "2026",
+        "ppr",
+        10,
+        observed_at=datetime(2026, 6, 1, 1, tzinfo=UTC),
+    )
+    assert ranking.matched_row_count == 1
+    sync(
+        DraftProvider(
+            [
+                {
+                    "pick_no": 1,
+                    "player_id": "same-1",
+                    "metadata": {"first_name": "Same", "last_name": "Player"},
+                }
+            ]
+        ),
+        repository,
+        "l1",
+        observed_at=datetime(2026, 6, 1, 2, tzinfo=UTC),
+    )
+    assert repository.board(datetime(2026, 6, 1, 3, tzinfo=UTC), "d1", "l1", None, None, 100) == []
+    sync(
+        DraftProvider(
+            [
+                {
+                    "pick_no": 1,
+                    "player_id": "same-2",
+                    "metadata": {"first_name": "Same", "last_name": "Player"},
+                }
+            ]
+        ),
+        repository,
+        "l1",
+        observed_at=datetime(2026, 6, 1, 4, tzinfo=UTC),
+    )
+    assert repository.board(datetime(2026, 6, 1, 5, tzinfo=UTC), "d1", "l1", None, None, 100) == []
+
+    payload["same-1"] = {**payload["same-1"], "team": "BUF"}
+    sync_players(
+        PlayerProvider(payload),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=datetime(2026, 6, 2, tzinfo=UTC),
+    )
+    with duckdb.connect(str(repository.path)) as connection:
+        later = dict(
+            connection.execute(
+                "SELECT provider_player_id, canonical_player_id FROM player_provider_ids "
+                "WHERE provider = 'sleeper'"
+            ).fetchall()
+        )
+    assert later == dict(sleeper_mappings)
+
+
+def test_conflicting_existing_canonical_mappings_roll_back(tmp_path: Path) -> None:
+    repository = IntelligenceRepository(tmp_path / "unsafe.duckdb")
+    repository.initialize()
+    observed_at = datetime(2026, 6, 1, tzinfo=UTC)
+    with duckdb.connect(str(repository.path)) as connection:
+        connection.execute(
+            "INSERT INTO canonical_players VALUES ('c1', ?), ('c2', ?)",
+            [observed_at, observed_at],
+        )
+        connection.execute(
+            "INSERT INTO player_provider_ids VALUES ('c1','gsis','g1',?), ('c2','espn','e1',?)",
+            [observed_at, observed_at],
+        )
+    payload = {
+        "p1": {
+            "full_name": "Unsafe Player",
+            "position": "WR",
+            "gsis_id": "g1",
+            "espn_id": "e1",
+        }
+    }
+    with pytest.raises(DataIntegrityError, match="multiple existing canonical players"):
+        sync_players(PlayerProvider(payload), repository, tmp_path / "cache", force=True)
+    with duckdb.connect(str(repository.path)) as connection:
+        assert connection.execute("SELECT count(*) FROM player_directory_snapshots").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT count(*) FROM player_observations").fetchone() == (0,)
 
 
 def test_ranking_resolution_issues_and_dedup(tmp_path: Path) -> None:
@@ -289,6 +509,7 @@ def test_m2_migration_preserves_m1_rows(tmp_path: Path) -> None:
             (2, "repeatable_draft_states"),
             (3, "m2_player_intelligence"),
             (4, "m2_observation_schema_alignment"),
+            (5, "m2_player_source_observations"),
         ]
         assert connection.execute("SELECT count(*) FROM player_observations").fetchone() == (0,)
 
@@ -329,7 +550,7 @@ def test_migration_four_upgrades_exact_deployed_m2_schema_and_preserves_rows(
         assert row == ("cp1", observed_at)
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
 
 
 def test_fresh_and_upgraded_player_observation_schemas_are_equivalent(tmp_path: Path) -> None:
@@ -387,21 +608,18 @@ def test_player_persistence_rolls_back_and_retry_is_safe(
     repository = IntelligenceRepository(tmp_path / "history.duckdb")
     provider = PlayerProvider(player_payload())
     cache = tmp_path / "cache"
-    original = repository._insert_player_observation
-    calls = 0
+    original = repository._bulk_insert_player_rows
 
-    def fail_after_first(
+    def fail_after_bulk_insert(
         connection: duckdb.DuckDBPyConnection,
-        snapshot: PlayerDirectorySnapshot,
-        player: dict[str, Any],
+        canonical_rows: list[dict[str, Any]],
+        mapping_rows: list[dict[str, Any]],
+        observation_rows: list[dict[str, Any]],
     ) -> None:
-        nonlocal calls
-        calls += 1
-        original(connection, snapshot, player)
-        if calls == 1:
-            raise RuntimeError("injected persistence failure")
+        original(connection, canonical_rows, mapping_rows, observation_rows)
+        raise RuntimeError("injected persistence failure")
 
-    monkeypatch.setattr(repository, "_insert_player_observation", fail_after_first)
+    monkeypatch.setattr(repository, "_bulk_insert_player_rows", fail_after_bulk_insert)
     with pytest.raises(RuntimeError, match="injected persistence failure"):
         sync_players(
             provider,
@@ -419,7 +637,7 @@ def test_player_persistence_rolls_back_and_retry_is_safe(
         ):
             assert connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
 
-    monkeypatch.setattr(repository, "_insert_player_observation", original)
+    monkeypatch.setattr(repository, "_bulk_insert_player_rows", original)
     snapshot, created, source = sync_players(
         provider,
         repository,
@@ -514,7 +732,7 @@ def test_migration_four_succeeds_after_inconsistent_fixture_is_corrected(tmp_pat
 
     IntelligenceRepository(path).initialize()
 
-    assert _migration_versions(path) == [1, 2, 3, 4]
+    assert _migration_versions(path) == [1, 2, 3, 4, 5]
     with duckdb.connect(str(path)) as connection:
         assert connection.execute(
             "SELECT observed_at FROM player_observations "
@@ -545,7 +763,9 @@ _DEPLOYED_PLAYER_OBSERVATION_COLUMNS = [
     "raw_payload",
 ]
 _FINAL_PLAYER_OBSERVATION_COLUMNS = [
-    *_DEPLOYED_PLAYER_OBSERVATION_COLUMNS[:3],
+    *_DEPLOYED_PLAYER_OBSERVATION_COLUMNS[:2],
+    "provider",
+    _DEPLOYED_PLAYER_OBSERVATION_COLUMNS[2],
     "observed_at",
     *_DEPLOYED_PLAYER_OBSERVATION_COLUMNS[3:],
 ]

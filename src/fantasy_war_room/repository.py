@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
+import polars as pl
 
+from fantasy_war_room.errors import DataIntegrityError
 from fantasy_war_room.models import (
     BoardPlayer,
     PlayerDirectorySnapshot,
@@ -138,11 +141,47 @@ DROP TABLE ranking_match_issues;
 ALTER TABLE ranking_match_issues_v4 RENAME TO ranking_match_issues;
 """
 
+MIGRATION_5 = """
+CREATE TABLE player_provider_ids_v5 (
+ canonical_player_id VARCHAR NOT NULL, provider VARCHAR NOT NULL,
+ provider_player_id VARCHAR NOT NULL, first_observed_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(provider, provider_player_id)
+);
+INSERT INTO player_provider_ids_v5 (
+ canonical_player_id, provider, provider_player_id, first_observed_at
+)
+SELECT canonical_player_id, provider, provider_player_id, first_observed_at
+FROM player_provider_ids;
+DROP TABLE player_provider_ids;
+ALTER TABLE player_provider_ids_v5 RENAME TO player_provider_ids;
+CREATE TABLE player_observations_v5 (
+ snapshot_id VARCHAR NOT NULL, canonical_player_id VARCHAR NOT NULL,
+ provider VARCHAR NOT NULL, provider_player_id VARCHAR NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL, first_name VARCHAR NOT NULL, last_name VARCHAR NOT NULL,
+ normalized_full_name VARCHAR NOT NULL, position VARCHAR, fantasy_positions JSON NOT NULL,
+ team VARCHAR, active BOOLEAN, status VARCHAR, injury_status VARCHAR,
+ years_experience DOUBLE, provider_ids JSON NOT NULL, raw_payload JSON NOT NULL,
+ PRIMARY KEY(snapshot_id, provider, provider_player_id)
+);
+INSERT INTO player_observations_v5 (
+ snapshot_id, canonical_player_id, provider, provider_player_id, observed_at,
+ first_name, last_name, normalized_full_name, position, fantasy_positions,
+ team, active, status, injury_status, years_experience, provider_ids, raw_payload
+)
+SELECT snapshot_id, canonical_player_id, 'sleeper', provider_player_id, observed_at,
+ first_name, last_name, normalized_full_name, position, fantasy_positions,
+ team, active, status, injury_status, years_experience, provider_ids, raw_payload
+FROM player_observations;
+DROP TABLE player_observations;
+ALTER TABLE player_observations_v5 RENAME TO player_observations;
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
     (3, "m2_player_intelligence", MIGRATION_3),
     (4, "m2_observation_schema_alignment", MIGRATION_4),
+    (5, "m2_player_source_observations", MIGRATION_5),
 )
 
 
@@ -343,6 +382,42 @@ def _count_query(connection: duckdb.DuckDBPyConnection, sql: str) -> int:
     return int(row[0])
 
 
+def _records_represent_same_player(records: list[dict[str, Any]]) -> bool:
+    names = {str(record["normalized_full_name"]) for record in records}
+    return len(names) == 1 or "duplicate player" in names
+
+
+def _safe_player_details(player: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sleeper_player_id": player["provider_player_id"],
+        "normalized_name": player["normalized_full_name"],
+        "position": player["position"],
+        "team": player["team"],
+    }
+
+
+def _safe_collision_details(
+    duplicate_claims: dict[tuple[str, str], list[dict[str, Any]]],
+    unsafe_claims: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    for claim, records in duplicate_claims.items():
+        sleeper_ids = tuple(sorted(str(record["provider_player_id"]) for record in records))
+        canonical_ids = {str(record["_resolved_canonical_player_id"]) for record in records}
+        group_key = ("|".join(sorted(canonical_ids)), sleeper_ids)
+        detail = grouped.setdefault(
+            group_key,
+            {
+                "canonical_player_ids": sorted(canonical_ids),
+                "records": [_safe_player_details(record) for record in records],
+                "merge_provider_ids": [],
+                "resolution": "quarantined" if claim in unsafe_claims else "merged",
+            },
+        )
+        detail["merge_provider_ids"].append({"provider": claim[0], "provider_player_id": claim[1]})
+    return sorted(grouped.values(), key=lambda detail: detail["records"][0]["sleeper_player_id"])
+
+
 class IntelligenceRepository(SnapshotRepository):
     def latest_player_hash(self, provider: str, sport: str) -> str | None:
         self.initialize()
@@ -359,6 +434,8 @@ class IntelligenceRepository(SnapshotRepository):
         self,
         snapshot: PlayerDirectorySnapshot,
         players: list[dict[str, Any]],
+        timings: dict[str, float] | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> bool:
         self.initialize()
         with duckdb.connect(str(self.path)) as connection:
@@ -372,9 +449,115 @@ class IntelligenceRepository(SnapshotRepository):
                 ).fetchone()
                 if latest and str(latest[0]) == snapshot.payload_hash:
                     connection.rollback()
+                    if timings is not None:
+                        timings.update(identity_resolution=0.0, database_persistence=0.0)
                     return False
+                identity_started = time.perf_counter()
+                existing_rows = connection.execute(
+                    "SELECT canonical_player_id, provider, provider_player_id "
+                    "FROM player_provider_ids"
+                ).fetchall()
+                identity_map = {
+                    (str(provider), str(provider_id)): str(canonical_id)
+                    for canonical_id, provider, provider_id in existing_rows
+                }
+                known_canonical_ids = {str(row[0]) for row in existing_rows}
+                claim_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+                for player in players:
+                    for provider, provider_id in player["provider_ids"].items():
+                        if provider != "sleeper":
+                            claim_groups.setdefault((provider, provider_id), []).append(player)
+                duplicate_claims = {
+                    key: records for key, records in claim_groups.items() if len(records) > 1
+                }
+                unsafe_claims = {
+                    key
+                    for key, records in duplicate_claims.items()
+                    if not _records_represent_same_player(records)
+                }
+                canonical_rows: list[dict[str, Any]] = []
+                mapping_rows: list[dict[str, Any]] = []
+                observation_rows: list[dict[str, Any]] = []
+                for player in players:
+                    provider_ids = player["provider_ids"]
+                    matches = {
+                        identity_map[(provider, provider_id)]
+                        for provider, provider_id in provider_ids.items()
+                        if (provider, provider_id) in identity_map
+                        and (provider == "sleeper" or (provider, provider_id) not in unsafe_claims)
+                    }
+                    if len(matches) > 1:
+                        details = _safe_player_details(player)
+                        details["matched_canonical_player_ids"] = sorted(matches)
+                        raise DataIntegrityError(
+                            "Provider identifiers resolve one Sleeper record to multiple "
+                            "existing canonical players",
+                            {"conflict_count": 1, "collisions": [details]},
+                        )
+                    canonical_id = next(iter(matches), str(player["canonical_player_id"]))
+                    player["_resolved_canonical_player_id"] = canonical_id
+                    if canonical_id not in known_canonical_ids:
+                        known_canonical_ids.add(canonical_id)
+                        canonical_rows.append(
+                            {
+                                "canonical_player_id": canonical_id,
+                                "created_at": snapshot.observed_at,
+                            }
+                        )
+                    for provider, provider_id in provider_ids.items():
+                        key = (provider, provider_id)
+                        if provider != "sleeper" and key in unsafe_claims:
+                            continue
+                        if key not in identity_map:
+                            identity_map[key] = canonical_id
+                            mapping_rows.append(
+                                {
+                                    "canonical_player_id": canonical_id,
+                                    "provider": provider,
+                                    "provider_player_id": provider_id,
+                                    "first_observed_at": snapshot.observed_at,
+                                }
+                            )
+                    observation_rows.append(
+                        {
+                            "snapshot_id": snapshot.snapshot_id,
+                            "canonical_player_id": canonical_id,
+                            "provider": snapshot.provider,
+                            "provider_player_id": player["provider_player_id"],
+                            "observed_at": snapshot.observed_at,
+                            "first_name": player["first_name"],
+                            "last_name": player["last_name"],
+                            "normalized_full_name": player["normalized_full_name"],
+                            "position": player["position"],
+                            "fantasy_positions": json.dumps(player["fantasy_positions"]),
+                            "team": player["team"],
+                            "active": player["active"],
+                            "status": player["status"],
+                            "injury_status": player["injury_status"],
+                            "years_experience": player["years_experience"],
+                            "provider_ids": json.dumps(provider_ids, sort_keys=True),
+                            "raw_payload": json.dumps(player["raw_payload"], sort_keys=True),
+                        }
+                    )
+                players.clear()
+                collision_details = _safe_collision_details(duplicate_claims, unsafe_claims)
+                if diagnostics is not None:
+                    diagnostics.update(
+                        collision_count=len(collision_details),
+                        merged_collision_count=sum(
+                            detail["resolution"] == "merged" for detail in collision_details
+                        ),
+                        quarantined_collision_count=sum(
+                            detail["resolution"] == "quarantined" for detail in collision_details
+                        ),
+                        collisions=collision_details,
+                    )
+                identity_elapsed = time.perf_counter() - identity_started
+                persistence_started = time.perf_counter()
                 connection.execute(
-                    "INSERT INTO player_directory_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO player_directory_snapshots (snapshot_id, provider, sport, "
+                    "observed_at, fetched_at, payload_hash, player_count, raw_cache_path, "
+                    "schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         snapshot.snapshot_id,
                         snapshot.provider,
@@ -387,13 +570,64 @@ class IntelligenceRepository(SnapshotRepository):
                         snapshot.schema_version,
                     ],
                 )
-                for player in players:
-                    self._insert_player_observation(connection, snapshot, player)
+                self._bulk_insert_player_rows(
+                    connection, canonical_rows, mapping_rows, observation_rows
+                )
                 connection.commit()
+                if timings is not None:
+                    timings.update(
+                        identity_resolution=identity_elapsed,
+                        database_persistence=time.perf_counter() - persistence_started,
+                    )
             except Exception:
                 connection.rollback()
                 raise
         return True
+
+    def _bulk_insert_player_rows(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        canonical_rows: list[dict[str, Any]],
+        mapping_rows: list[dict[str, Any]],
+        observation_rows: list[dict[str, Any]],
+    ) -> None:
+        inserts = (
+            (
+                "canonical_batch",
+                canonical_rows,
+                "INSERT INTO canonical_players (canonical_player_id, created_at) "
+                "SELECT canonical_player_id, created_at FROM canonical_batch",
+            ),
+            (
+                "mapping_batch",
+                mapping_rows,
+                "INSERT INTO player_provider_ids (canonical_player_id, provider, "
+                "provider_player_id, first_observed_at) SELECT canonical_player_id, provider, "
+                "provider_player_id, first_observed_at FROM mapping_batch",
+            ),
+            (
+                "observation_batch",
+                observation_rows,
+                "INSERT INTO player_observations (snapshot_id, canonical_player_id, "
+                "provider, provider_player_id, observed_at, first_name, last_name, "
+                "normalized_full_name, "
+                "position, fantasy_positions, team, active, status, injury_status, "
+                "years_experience, provider_ids, raw_payload) SELECT snapshot_id, "
+                "canonical_player_id, provider, provider_player_id, observed_at, first_name, "
+                "last_name, normalized_full_name, position, fantasy_positions, team, active, "
+                "status, "
+                "injury_status, years_experience, provider_ids, raw_payload "
+                "FROM observation_batch",
+            ),
+        )
+        for name, rows, sql in inserts:
+            if not rows:
+                continue
+            connection.register(name, pl.DataFrame(rows))
+            try:
+                connection.execute(sql)
+            finally:
+                connection.unregister(name)
 
     def _insert_player_observation(
         self,
@@ -502,7 +736,8 @@ class IntelligenceRepository(SnapshotRepository):
                 return None, "unresolved", "position is required for name matching", []
             if team:
                 exact_team = connection.execute(
-                    "SELECT canonical_player_id FROM player_observations WHERE snapshot_id = ? "
+                    "SELECT DISTINCT canonical_player_id FROM player_observations "
+                    "WHERE snapshot_id = ? "
                     "AND normalized_full_name = ? AND upper(position) = upper(?) "
                     "AND upper(team) = upper(?) ORDER BY canonical_player_id",
                     [snapshot[0], name, position, team],
@@ -513,7 +748,8 @@ class IntelligenceRepository(SnapshotRepository):
                 if len(team_ids) > 1:
                     return None, "ambiguous", "multiple exact player matches", team_ids
             candidates = connection.execute(
-                "SELECT canonical_player_id FROM player_observations WHERE snapshot_id = ? "
+                "SELECT DISTINCT canonical_player_id FROM player_observations "
+                "WHERE snapshot_id = ? "
                 "AND normalized_full_name = ? AND upper(position) = upper(?) "
                 "ORDER BY canonical_player_id",
                 [snapshot[0], name, position],
@@ -688,8 +924,12 @@ FROM ranking r JOIN ranking_entries e ON e.ranking_snapshot_id = r.ranking_snaps
 JOIN players p ON true
 JOIN player_observations o ON o.snapshot_id = p.snapshot_id
  AND o.canonical_player_id = e.canonical_player_id
+ AND o.provider_player_id = (SELECT min(o2.provider_player_id) FROM player_observations o2
+  WHERE o2.snapshot_id = p.snapshot_id AND o2.canonical_player_id = e.canonical_player_id)
 LEFT JOIN player_provider_ids ids ON ids.canonical_player_id = e.canonical_player_id
  AND ids.provider = 'sleeper'
+ AND ids.provider_player_id = (SELECT min(ids2.provider_player_id) FROM player_provider_ids ids2
+  WHERE ids2.canonical_player_id = e.canonical_player_id AND ids2.provider = 'sleeper')
 JOIN draft d ON true
 LEFT JOIN drafted x ON x.canonical_player_id = e.canonical_player_id
 WHERE e.match_status = 'matched' AND x.canonical_player_id IS NULL

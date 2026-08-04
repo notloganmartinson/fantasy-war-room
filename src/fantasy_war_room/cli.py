@@ -291,6 +291,9 @@ def players_sync(
     force: bool = typer.Option(False, "--force", help="Bypass the 24-hour player cache."),
     db_path: Path | None = typer.Option(None),
     json_output: bool = typer.Option(False, "--json"),
+    diagnostic_timings: bool = typer.Option(
+        False, "--timings", help="Include structured phase timings in the result."
+    ),
 ) -> None:
     """Synchronize the Sleeper NFL player directory."""
 
@@ -298,16 +301,24 @@ def players_sync(
         settings = load_settings(db_path=db_path)
         ensure_directories(settings)
         client = _client(settings)
+        timings: dict[str, float] = {}
+        identity_diagnostics: dict[str, Any] = {}
         try:
             snapshot, created, source = sync_players(
                 client,
                 IntelligenceRepository(settings.db_path),
                 Path(app_dirs().user_cache_dir),
                 force=force,
+                timings=timings,
+                diagnostics=identity_diagnostics,
             )
         finally:
             client.close()
-        return {"source": source, "created": created, "snapshot": snapshot}
+        result = {"source": source, "created": created, "snapshot": snapshot}
+        if diagnostic_timings:
+            result["timings_seconds"] = timings
+            result["identity_diagnostics"] = identity_diagnostics
+        return result
 
     _run(
         "players sync",

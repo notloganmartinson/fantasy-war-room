@@ -101,13 +101,20 @@ def test_m2_json_commands_and_cache_work_outside_repository(
 
     register_sleeper(api, sleeper_payloads)
     player_route = api.routes[-1]
-    first = runner.invoke(app, ["players", "sync", "--json"])
+    first = runner.invoke(app, ["players", "sync", "--timings", "--json"])
     cached = runner.invoke(app, ["players", "sync", "--json"])
     forced = runner.invoke(app, ["players", "sync", "--force", "--json"])
 
     assert first.exit_code == cached.exit_code == forced.exit_code == 0
     assert parse_output(first)["command"] == "players sync"
     assert parse_output(first)["data"]["source"] == "network"
+    assert set(parse_output(first)["data"]["timings_seconds"]) == {
+        "cache_read_or_network_download",
+        "parsing_and_normalization",
+        "identity_resolution",
+        "database_persistence",
+        "total",
+    }
     assert parse_output(cached)["data"] == {
         **parse_output(cached)["data"],
         "source": "cache",
