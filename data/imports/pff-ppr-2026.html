@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <script type="application/ld+json">
+     {
+       "@context": "https://schema.org",
+       "@type": "WebSite",
+       "url": "https://www.pff.com",
+       "name": "PFF",
+       "alternateName": "Pro Football Focus",
+       "potentialAction": {
+         "@type": "SearchAction",
+         "target": "https://www.pff.com/search?q={search_term_string}",
+         "query-input": "required name=search_term_string"
+       }
+     }
+    </script>
+
+
+    <script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","item":"https://www.pff.com","name":"Home","position":1},{"@type":"ListItem","item":"https://www.pff.com/news","name":"News & Analysis","position":2},{"@type":"ListItem","name":"2026 Fantasy Football Rankings: PPR top 200 for drafts","position":3}]}
+    </script>
+
+    <script>
+      window.KYBER_ICON_EXTERNAL_PATHS = {
+        ICON: 'https://www.pff.com/images/icon-symbols-3125c08a5ca71612295597919930619a.svg?vsn=d',
+        NCAA: 'https://www.pff.com/images/ncaa-symbols-dc6baa18e76a83a190c6b4bdecb090c2.svg?vsn=d',
+        NFL: 'https://www.pff.com/images/nfl-symbols-44ab5d6bbdd500d5f03161331b79bf8a.svg?vsn=d'
+      }
+      window.MERLIN_MEDIA_DOMAIN = 'https://media.pff.com'
+      window.SUBSCRIBE_DOMAIN = 'https://subscribe.pff.com'
+    </script>
+
+
+      <script>
+        window.__clerkSignInUrl = "/login";
+        window.__clerkSignUpUrl = "/create-account";
+        window.__clerkSignOutUrl = "/login";
+        window.__merlinLoggedIn = false;
+      </script>
+
+      <script defer crossorigin="anonymous"
+        data-clerk-js-script
+        data-clerk-publishable-key="pk_live_Y2xlcmsucGZmLmNvbSQ"
+        src="https://clerk.pff.com/npm/@clerk/clerk-js@6/dist/clerk.browser.js"></script>
+      <script>
+        window.addEventListener('load', async function () {
+          const loadOpts = {};
+          if (window.__clerkSignInUrl) loadOpts.signInUrl = window.__clerkSignInUrl;
+          if (window.__clerkSignUpUrl) loadOpts.signUpUrl = window.__clerkSignUpUrl;
+          await Clerk.load(loadOpts);
+
+          // Cross-tab / cross-subdomain sign-out sync. clerk-js flips
+          // Clerk.session to null when the user signs out elsewhere
+          // (BroadcastChannel for same-origin tabs; focus/poll session-touch ->
+          // 401 for other subdomains), but our nav is server-rendered and not
+          // bound to Clerk's React state, so nothing repaints. Reload so the
+          // server re-renders the signed-out nav.
+          //
+          // Loop guards: (1) only reload pages the server rendered as signed in
+          // (window.__merlinLoggedIn) -- a signed-out page would otherwise reload
+          // straight back into a signed-out page forever; (2) skipInitialEmit so
+          // the post-reload null-at-load state is not treated as a transition;
+          // (3) a one-shot sessionStorage marker (re-armed when a live session
+          // reappears) as belt-and-suspenders if the session cookie lags the reload.
+          var SIGNED_OUT_RELOAD_KEY = 'merlinClerkSignedOutReload';
+          Clerk.addListener(function (resources) {
+            if (resources && resources.session) {
+              try { window.sessionStorage.removeItem(SIGNED_OUT_RELOAD_KEY); } catch (e) {}
+              return;
+            }
+            // This tab initiated the sign-out: signOut()'s own redirect handles
+            // navigation. Reloading here races (and aborts) its cookie-clearing.
+            if (window.__merlinSigningOut === true) return;
+            if (window.__merlinLoggedIn !== true) return;
+            try {
+              if (window.sessionStorage.getItem(SIGNED_OUT_RELOAD_KEY)) return;
+              window.sessionStorage.setItem(SIGNED_OUT_RELOAD_KEY, '1');
+            } catch (e) {}
+            window.location.reload();
+          }, { skipInitialEmit: true });
+        });
+      </script>
+
+
+
+
+<title>2026 Fantasy Football Rankings: PPR top 200 for drafts</title>
+
+  <meta property="og:title" content="2026 Fantasy Football Rankings: PPR top 200 for drafts">
+
+
+  <meta name="description" content="Nathan Jahnke shares his top 200 rankings for the 2026 fantasy season in single-quarterback, PPR redraft leagues.">
+  <meta property="og:description" content="Nathan Jahnke shares his top 200 rankings for the 2026 fantasy season in single-quarterback, PPR redraft leagues.">
+
+
+  <link rel="canonical" href="https://www.pff.com/news/fantasy-football-rankings-ppr-rankings-for-drafts">
+  <meta property="og:url" content="https://www.pff.com/news/fantasy-football-rankings-ppr-rankings-for-drafts">
+
+
+<meta name="robots" content="max-image-preview:large">
+<link rel="alternate" type="application/rss+xml" href="https://www.pff.com/feed" />
+
+<meta property="og:site_name" content="PFF">
+<meta name="twitter:site" content="@pff">
+<meta name="twitter:card" content="summary_large_image">
+
+<meta property="og:type" content="article">
+
+
+<meta property="og:image" content="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&h=675">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="675">
+<meta property="article:published_time" content="2026-07-20T09:00:00Z">
+<meta name="author" content="Nathan Jahnke">
+
+  <meta name="twitter:card" content="summary_large_image">
+
+<meta name="twitter:title" content="2026 Fantasy Football Rankings: PPR top 200 for drafts">
+<meta name="twitter:description" content="Nathan Jahnke shares his top 200 rankings for the 2026 fantasy season in single-quarterback, PPR redraft leagues.">
+<meta name="twitter:image" content="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&h=675">
+
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"NewsArticle","articleSection":"Fantasy","author":[{"@type":"Person","description":"Nathan joined PFF in as a Player Participation Analyst. He’s played several crucial roles at the company, including Director of Analytics and Software Developer. He currently works as Lead Fantasy Football Analyst and Senior Software Engineer. Nathan went to the University of Wisconsin-Eau Claire and has a Bachelor of Science in Actuarial Science. He's No. 2 ranker at FantasyPros in 2020, and No. 3 in 2019.","image":"https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png","jobTitle":"Senior Fantasy Analyst / Software Developer","name":"Nathan Jahnke","sameAs":"https://x.com/PFF_NateJahnke","url":"https://www.pff.com/analyst/nathan-jahnke"}],"datePublished":"2026-07-20T05:00:00-04:00","description":"Nathan Jahnke shares his top 200 rankings for the 2026 fantasy season in single-quarterback, PPR redraft leagues.","hasPart":{"@type":"WebPageElement","cssSelector":".m-locked-content-container","isAccessibleForFree":"False"},"headline":"2026 Fantasy Football Rankings: PPR top 200 for drafts","image":[{"@type":"ImageObject","height":675,"url":"https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&h=675","width":1200},{"@type":"ImageObject","height":900,"url":"https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&h=900","width":1200},{"@type":"ImageObject","height":1200,"url":"https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&h=1200","width":1200}],"isAccessibleForFree":"false","mainEntityOfPage":{"@id":"https://www.pff.com/news/fantasy-football-rankings-ppr-rankings-for-drafts","@type":"WebPage"},"publisher":{"@type":"Organization","alternateName":"Pro Football Focus","logo":{"@type":"ImageObject","height":"60","url":"https://media.pff.com/2018/06/PFF_Hori.png","width":"600"},"name":"PFF"}}
+</script>
+
+<meta name="csrf-token" content="DjM7CAIlFXI9QBR0HzYsRC9aDjUHSjt8yPqCnBOCQqADhge2X4Qx6yN-">
+<meta name="google-site-verification" content="m2N80aEy8ONIhYvVOHT-XogcBBskiZd84_MBObKLOqo" />
+
+<meta name="next-head-count" content="1"/>
+
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+<link rel="preconnect" href="https://media.pff.com">
+<link rel="preconnect" href="https://js.recurly.com">
+<link rel="preconnect" href="https://cdn.heapanalytics.com">
+<link rel="shortcut icon" href="/favicon-179f79a208da353df13eb2e221fdb8fb.ico?vsn=d">
+<link rel="icon" type="image/png" href="/images/favicons/favicon-16x16-9d30f011a99436ffb232d75c5d744d2f.png?vsn=d" sizes="16x16">
+<link rel="icon" type="image/png" href="/images/favicons/favicon-32x32-d75fc7b2095d785488b3f97e2492b025.png?vsn=d" sizes="32x32">
+<link rel="icon" type="image/png" href="/images/favicons/favicon-96x96-c4e7d1c69506c5b3c0376beee179daa9.png?vsn=d" sizes="96x96">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#FFFFFF">
+<link rel="apple-touch-icon-precomposed" href="/images/favicons/apple-icon-precomposed-e5a7e94513d2552f8223106e8d388ce6.png?vsn=d">
+<link rel="apple-touch-icon" sizes="57x57" href="/images/favicons/apple-icon-57x57-f5b14d83e8ec7db5f94dd30197ae9594.png?vsn=d">
+<link rel="apple-touch-icon" sizes="114x114" href="/images/favicons/apple-icon-114x114-981a0103fb7b778682008a9faad8328b.png?vsn=d">
+<link rel="apple-touch-icon" sizes="72x72" href="/images/favicons/apple-icon-72x72-90d7b8a5d670555d23338c2bfec43e09.png?vsn=d">
+<link rel="apple-touch-icon" sizes="144x144" href="/images/favicons/apple-icon-144x144-b45bd95c8ddf89b117625bf39a66fed6.png?vsn=d">
+<link rel="apple-touch-icon" sizes="60x60" href="/images/favicons/apple-icon-60x60-edddd4ee591a35613745af7695ec8841.png?vsn=d">
+<link rel="apple-touch-icon" sizes="120x120" href="/images/favicons/apple-icon-120x120-5483d31cd97c5bf3c9ce86618e44722c.png?vsn=d">
+<link rel="apple-touch-icon" sizes="76x76" href="/images/favicons/apple-icon-76x76-157cc501f82125a69b3398c91f278eff.png?vsn=d">
+<link rel="apple-touch-icon" sizes="152x152" href="/images/favicons/apple-icon-152x152-81ed006897fbe335cff9b51ed50f5eab.png?vsn=d">
+<link rel="apple-touch-icon" sizes="180x180" href="/images/favicons/apple-icon-180x180-baf469ce293c42e9892c1ec3ab91e334.png?vsn=d">
+<meta name="msapplication-TileColor" content="#FFFFFF">
+<meta name="msapplication-TileImage" content="/images/favicons/ms-icon-144x144-4085f264f443377b0e2cd666ee7cb68d.png?vsn=d">
+
+<meta name="merlin-version" content="3.20.131">
+
+  <meta name="apple-itunes-app" content="app-id=1582525285">
+
+
+<script data-cookieconsent="ignore">
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){ dataLayer.push(arguments); }
+  gtag('consent', 'default', {
+    'ad_storage': 'denied',
+    'ad_user_data': 'denied',
+    'ad_personalization': 'denied',
+    'analytics_storage': 'denied',
+    'functionality_storage': 'denied',
+    'personalization_storage': 'denied',
+    'security_storage': 'granted',
+    'wait_for_update': 500
+  });
+  gtag('set', 'ads_data_redaction', true);
+  gtag('set', 'url_passthrough', false);
+</script>
+<script id="Cookiebot" src="https://consent.cookiebot.com/uc.js" data-cbid="21fde5b3-da22-4139-8c72-22527f8c80ae" data-blockingmode="manual" data-culture="EN" type="text/javascript" data-georegions="{&quot;region&quot;:&quot;AT,BE,BG,CY,CZ,DE,DK,EE,ES,FI,FR,GR,HR,HU,IE,IT,LT,LU,LV,MT,NL,PL,PT,RO,SE,SI,SK,IS,LI,NOR,GB&quot;,&quot;cbid&quot;:&quot;fff6d358-bd79-4a41-ae88-c5e35a6700eb&quot;}" async></script>
+
+
+
+
+<script>
+ window.dataLayer = window.dataLayer || [];
+ window.dataLayer.unshift({
+   'userId': '',
+   'loggedInStatus': 'false',
+   'subscriptionType': '',
+   'internalTraffic': 'No',
+   'pageType': 'Article',
+   'category': 'Fantasy',
+   'section': 'news',
+   'datePublished': '20260720',
+   'author': 'Nathan Jahnke',
+   'contentType': 'Article',
+   'newsVertical': '',
+   'isPremiumArticle':'true'
+ });
+</script>
+
+<!-- Google Tag Manager -->
+<script>
+ (function(w,d,s,l,i){
+   w[l]=w[l]||[];
+   w[l].push({'gtm.start': new Date().getTime(),event:'gtm.js'});
+   var f=d.getElementsByTagName(s)[0],
+       j=d.createElement(s),
+       dl=l!='dataLayer'?'&l='+l:'';
+   j.async=true;
+   j.src='//www.googletagmanager.com/gtm.js?id='+i+dl;
+   f.parentNode.insertBefore(j,f);
+ })(window,document,'script','dataLayer','GTM-MWLLR6');
+</script>
+<!-- End Google Tag Manager -->
+
+
+    <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin />
+    <link rel='stylesheet' crossorigin='anonymous' href='https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400..900;1,400..900&display=swap' />
+    <link rel='stylesheet' crossorigin='anonymous' href='https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400..700&display=swap' />
+
+      <link rel="stylesheet" href="/css/styles-0e5c2562204f44b99bce407bf5b62c38.css?vsn=d">
+
+
+      <link rel="stylesheet" href="/css/tablepress_styles-7c4bfba7a2381594071274c467966528.css?vsn=d">
+
+      <link rel="stylesheet" href="/css/lite_yt_embed_styles-e3d4001b5d67d644a7b205e2d9a46c6b.css?vsn=d">
+
+    <link rel="stylesheet" href="/css/shared_nav-1e5901e8d5cfd9c2739c8644deda7f33.css?vsn=d">
+
+
+<script type="text/javascript">
+  const heapConfig = {
+    heapAppId: '2100373990',
+    userId: '',
+    isLoggedIn: false,
+    subscriptionType: '',
+    isInternal: 'No',
+  };
+
+  function hasAnalyticsConsent() {
+    return typeof window !== 'undefined' && window.Cookiebot?.consent?.statistics === true;
+  }
+
+  window.heap=window.heap||[],heap.load=function(e,t){window.heap.appid=e,window.heap.config=t=t||{};var r=document.createElement("script");r.type="text/javascript",r.async=!0,r.src="https://cdn.heapanalytics.com/js/heap-"+e+".js";var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(r,a);for(var n=function(e){return function(){heap.push([e].concat(Array.prototype.slice.call(arguments,0)))}},p=["addEventProperties","addUserProperties","clearEventProperties","identify","resetIdentity","removeEventProperty","setEventProperties","track","unsetEventProperty"],o=0;o<p.length;o++)heap[p[o]]=n(p[o])};
+
+  heap.load(heapConfig.heapAppId, {
+    secureCookie: true
+  });
+
+  // Only identify user with PFF User ID if they have consented to analytics tracking
+  if (heapConfig.userId.length > 0 && hasAnalyticsConsent()) {
+    heap.identify(heapConfig.userId);
+  }
+
+  if (heap.identity && !heapConfig.isLoggedIn) {
+    heap.resetIdentity();
+  }
+
+  heap.addUserProperties({
+    subscription_type: heapConfig.subscriptionType,
+    is_internal: heapConfig.isInternal,
+  });
+</script>
+
+
+  </head>
+  <body>
+
+
+<!-- Google Tag Manager (noscript) -->
+<noscript>
+  <iframe src="//www.googletagmanager.com/ns.html?id=GTM-MWLLR6"
+          height="0" width="0" style="display:none;visibility:hidden"></iframe>
+</noscript>
+<!-- End Google Tag Manager (noscript) -->
+
+
+
+
+
+    <a class="fp-player-link"></a>
+<div
+  id="ld-context"
+  data-ld-user-context="{&quot;attributes&quot;:{&quot;ip&quot;:&quot;209.173.221.104&quot;,&quot;anonymous&quot;:true,&quot;pffInternal&quot;:false,&quot;pffUserId&quot;:null,&quot;premium&quot;:false,&quot;sessionId&quot;:&quot;6ddefe2c-371d-4bce-b43a-297312d67a87&quot;,&quot;signedIn&quot;:false},&quot;key&quot;:&quot;6ddefe2c-371d-4bce-b43a-297312d67a87&quot;,&quot;kind&quot;:&quot;user&quot;}"
+  data-ld-all-flags="{&quot;mds-daily-draft-limit-reached-modal&quot;:{&quot;copy&quot;:&quot;Get unlimited mock drafts and access the complete draft system&quot;,&quot;newModal&quot;:true,&quot;variant&quot;:&quot;Variant A&quot;},&quot;create-account-subtitle&quot;:&quot;Create an account for FREE today.&quot;,&quot;player-profile-show-team-players-widget&quot;:true,&quot;player-grades-paywall-experience&quot;:true,&quot;fmds-show-draft-state-banner&quot;:true,&quot;draft-bracket-private-leagues&quot;:true,&quot;mds-subscribe-app-hero-image&quot;:&quot;/assets/images/subscribe-image-july-2025.webp&quot;,&quot;merlin-enable-cookie-settings&quot;:false,&quot;draft-bracket-team-leaderboard&quot;:true,&quot;fantasy-default-rankings-tab&quot;:&quot;Draft Rankings&quot;,&quot;show-manual-league-settings&quot;:true,&quot;is-profile-email-editable&quot;:false,&quot;fmds-show-player-comparison-button&quot;:true,&quot;privacy-check-enabled&quot;:false,&quot;player-profiles-waiver-wire&quot;:false,&quot;game-simulator-additional-stats&quot;:false,&quot;teams-page-ads-enabled&quot;:true,&quot;merlin-custom-big-board-public-badge&quot;:true,&quot;draft-bracket-force-state&quot;:&quot;live&quot;,&quot;draft-bracket-similarity-stats&quot;:true,&quot;home-page-ads-enabled&quot;:true,&quot;store-user-email-in-session-storage-for-gtm&quot;:true,&quot;merlin-custom-big-board-auth-wall&quot;:true,&quot;merlin-mds-leaderboard-all-rounds&quot;:true,&quot;merlin-nfl-mds-set-default-favorite-teams&quot;:false,&quot;mds-undo-pick&quot;:true,&quot;merlin-custom-big-board-filter-position&quot;:true,&quot;player-profile-show-historical-performance&quot;:true,&quot;connect-show-live-tab&quot;:false,&quot;draft-bracket-board-actions&quot;:true,&quot;merlin-show-sponsor-ad-in-big-board&quot;:false,&quot;fantasy-lda-enable-live-espn&quot;:true,&quot;betting-enable-first-touchdown&quot;:true,&quot;mds-homepage-widget-enabled&quot;:false,&quot;merlin-custom-big-board-staff-picks&quot;:{},&quot;fmds-show-speed-slide&quot;:true,&quot;merlin-custom-big-board-college-team-filter&quot;:true,&quot;merlin-premium-cta-in-nav&quot;:true,&quot;betting-show-player-props-side-filter&quot;:true,&quot;mds-prominent-new-draft-cta&quot;:{&quot;prominentCta&quot;:true,&quot;variant&quot;:&quot;Option A&quot;},&quot;player-profile-show-fantasy-insights-widget&quot;:true,&quot;mds-new-share-button-design-experiment&quot;:&quot;Option A&quot;,&quot;player-profile-ads-enabled&quot;:true,&quot;merlin-custom-big-board-edit&quot;:true,&quot;player-props-show-table-glossary&quot;:true,&quot;player-profile-show-last-updated&quot;:false,&quot;mds-paid-user-start-draft-cta&quot;:{&quot;variant&quot;:&quot;Variant&quot;},&quot;merlin-show-mds-multiplayer&quot;:true,&quot;connect-show-team-tab&quot;:false,&quot;connect-show-game-tab&quot;:false,&quot;player-profile-show-week-projections&quot;:true,&quot;subscribe-left-panel-variant&quot;:&quot;control&quot;,&quot;player-profile-show-matchup-widget&quot;:true,&quot;player-profile-show-key-insights&quot;:true,&quot;mds-upsell-modal-variation&quot;:{&quot;images&quot;:[{&quot;lg&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-1-lg.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-1-lg-2x.webp 2x&quot;,&quot;sm&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-1-sm.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-1-sm-2x.webp 2x&quot;},{&quot;lg&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-2-lg.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-2-lg-2x.webp 2x&quot;,&quot;sm&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-2-sm.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-2-sm-2x.webp 2x&quot;},{&quot;lg&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-3-lg.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-3-lg-2x.webp 2x&quot;,&quot;sm&quot;:&quot;https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-3-sm.webp, https://beta.pff-qa.com/assets/subscribe/mds-upsell-modal/experiment-1b-3-sm-2x.webp 2x&quot;}],&quot;variant&quot;:&quot;Option B&quot;},&quot;show-espn-chrome-extension-side-load-instructions&quot;:true,&quot;cancel-flow-retention-variant&quot;:&quot;variant-1&quot;,&quot;merlin-custom-big-board-draft-with-board&quot;:true,&quot;enable-cheatsheet-feature&quot;:true,&quot;fmds-show-opponents-draft-strategy&quot;:true,&quot;draft-bracket-score-finalization-banner&quot;:&quot;&quot;,&quot;fmds-paywall-next-round-availability&quot;:true,&quot;enable-facebook-sign-in&quot;:false,&quot;fantasy-lda-show-clock&quot;:true,&quot;player-props-homepage-widget-enabled&quot;:false,&quot;fmds-show-draft-strategy&quot;:true,&quot;fantasy-show-new-draft-rankings-paywall&quot;:&quot;control&quot;,&quot;fmds-show-undo-pick-button&quot;:true,&quot;position-grade-show-ads&quot;:true,&quot;player-profiles-grades-explainer-text&quot;:false,&quot;merlin-custom-big-board-trending&quot;:true,&quot;merlin-show-rank-on-match-center&quot;:true,&quot;betting-enable-new-player-props-experience&quot;:true,&quot;mds-locked-feature-direct-link&quot;:false,&quot;merlin-article-paywall-ab-test&quot;:&quot;paywall_with_short_copy&quot;,&quot;player-profiles-activate-offseason-nfl&quot;:true,&quot;draft-bracket-league-leaderboard&quot;:true,&quot;enable-google-social-sign-in&quot;:false,&quot;enable-manual-league-sync&quot;:true,&quot;fantasy-show-lda-platform-keeper-info-modal&quot;:[],&quot;onboarding-flow-enabled&quot;:false,&quot;player-profiles-hide-grades-for-current-season&quot;:true,&quot;use-yahoo-lda-extension&quot;:false,&quot;enable-new-heap-flow-conditionally&quot;:false,&quot;draft-bracket-engagement-stats&quot;:false,&quot;use-google-login&quot;:true,&quot;enable-apple-social-sign-in&quot;:false,&quot;merlin-custom-big-board-clear-board&quot;:true,&quot;merlin-accounts-maintenance-mode&quot;:false,&quot;merlin-custom-big-board-save-author&quot;:false,&quot;non-paid-user-start-draft-cta&quot;:{&quot;variant&quot;:&quot;Variant&quot;},&quot;scores-page-ads-enabled&quot;:true,&quot;show-matchups-quick-guide&quot;:false,&quot;mds-enable-disable-draft-tabs&quot;:true,&quot;player-profile-show-fantasy-insights&quot;:true,&quot;mds-draft-simple-subscribe-modal&quot;:false,&quot;merlin-clerk-auth-enabled&quot;:true,&quot;show-discount-subscribe-paywall-modal&quot;:false,&quot;merlin-mds-leaderboard-player-popularity&quot;:false,&quot;player-profile-key-insights-ab-test&quot;:&quot;Control&quot;,&quot;fmds-contextual-sync-banner&quot;:{&quot;bannerText&quot;:&quot;ESPN league sync is now supported! Click here to get started.&quot;,&quot;showBanner&quot;:false},&quot;show-proj-in-fantasy-draft-rank-card&quot;:true,&quot;big-board-show-waa&quot;:true,&quot;merlin-show-rank-on-ticker&quot;:true,&quot;draft-bracket-force-lock&quot;:true,&quot;merlin-mds-custom-board&quot;:true,&quot;cosmos-exp-marketing-landing-page&quot;:&quot;{\&quot;variant\&quot;: \&quot;A\&quot;,\&quot;url\&quot;: \&quot;https://subscribe.pff.com\&quot;}&quot;,&quot;subscribe-upsell-banner-text&quot;:&quot;Draft-day confidence. Season-long insights. Get 25% off PFF+ with code DRAFT.&quot;,&quot;mds-show-draft-grade-experiment&quot;:{&quot;lockGrade&quot;:false,&quot;showGrade&quot;:true,&quot;variant&quot;:&quot;Option B&quot;},&quot;lda-show-draft-state-banner&quot;:true,&quot;merlin-custom-big-board-player-search&quot;:true,&quot;show-player-props-team-matchups-running-back-receiving-variant&quot;:true,&quot;nfl-power-rankings-paywall-experience&quot;:true,&quot;player-profiles-show-sticky-hero&quot;:true,&quot;show-player-props-team-matchups-running-back-rushing-variant&quot;:true,&quot;show-player-props-team-matchups-wide-receiver-variant&quot;:true,&quot;mds-page-ads-enabled&quot;:true,&quot;fantasy-analyst-ranking-banner&quot;:true,&quot;mds-draft-grade-rank&quot;:true,&quot;player-profiles-show-fantasy-insights&quot;:false,&quot;show-MDS-LDA-CTA-post-league-sync&quot;:false,&quot;merlin-custom-big-board-my-boards&quot;:true,&quot;mds-show-grade-explainer&quot;:true,&quot;common-link-to-new-player-profiles&quot;:true,&quot;player-profile-show-recent-games-widget&quot;:true,&quot;use-facebook-login&quot;:true,&quot;fantasy-lda-enable-live-manual&quot;:true,&quot;fantasy-matchup-row-expansion&quot;:true,&quot;player-profile-show-position-players-widget&quot;:true,&quot;connect-show-player-tab&quot;:false,&quot;subscribe-annual-headline&quot;:&quot;Save 33%&quot;,&quot;fmds-homepage-widget-image&quot;:&quot;/images/fmds-kickoff-widget-1.webp&quot;,&quot;fmds-homepage-widget-enabled&quot;:false,&quot;show-betting-paywall&quot;:false,&quot;mds-page-header-ads&quot;:false,&quot;merlin-custom-big-board-visibility-toggle&quot;:false,&quot;fmds-show-quick-actions&quot;:&quot;Variant A&quot;,&quot;is-draft-season&quot;:true,&quot;merlin-enable-mds-paywalls&quot;:true,&quot;draft-bracket-player-props&quot;:false,&quot;mds-grade-upsell-modal-delay&quot;:5,&quot;player-profiles-activate-offseason-ncaa&quot;:false,&quot;articles-category-ads-enabled&quot;:true,&quot;fmds-experimental-league-settings&quot;:false,&quot;nfl-mds-toggle-more-info&quot;:false,&quot;cosmos-fantasy-marketing-landing-page&quot;:&quot;A&quot;,&quot;ppt_weekly_free_game_enabled&quot;:false,&quot;mds-prominent-draft-cta&quot;:false,&quot;player-profile-show-season-type&quot;:true,&quot;player-profile-show-grade-widget&quot;:true,&quot;fmds-show-league-type-settings&quot;:true,&quot;show-my-team-dashboard-CTA-post-league-sync&quot;:true,&quot;mds-awards-enabled&quot;:true,&quot;merlin-custom-big-board-team-needs&quot;:true,&quot;draft-bracket-show-projected-points&quot;:true,&quot;merlin-enable-mds-sponsor-ads&quot;:false,&quot;show-id-me-verify-button&quot;:true,&quot;merlin-enable-mds-limited-drafts&quot;:true,&quot;league-sync-enable-espn-sync&quot;:true,&quot;common-link-to-new-ncaa-player-profiles&quot;:true,&quot;mds-trade-screen-non-paid-user&quot;:{&quot;variant&quot;:&quot;Variant&quot;},&quot;game-simulator-enable-adjust-lineups&quot;:false,&quot;ppt_weekly_free_game_ids&quot;:&quot;&quot;,&quot;fmds-homepage-widget-copy&quot;:&quot;Prep like a pro with PFF’s Fantasy Mock Draft Simulator&quot;,&quot;subscribe-upsell-banner&quot;:false,&quot;merlin-show-mds-multiplayer-nav&quot;:true,&quot;merlin-show-expected-points-in-navigation-bar&quot;:false,&quot;test&quot;:false,&quot;player-props-show-subscribe-paywall-modal&quot;:false,&quot;subscribe-enable-maintenance-mode&quot;:false,&quot;player-profile-show-past-performance-widget&quot;:true,&quot;merlin-show-new-nav-dropdown&quot;:true,&quot;draft-bracket-enabled&quot;:true,&quot;fantasy-my-leagues-direct-users-to-in-season-experience&quot;:false,&quot;player-profile-show-matchups&quot;:true,&quot;first-td-homepage-widget&quot;:false,&quot;fmds-show-next-round-suggestions&quot;:true,&quot;fantasy-lda-manual-drafting&quot;:true,&quot;draft-bracket-draft-card&quot;:true,&quot;show-download-mds-result-image&quot;:true,&quot;merlin-mds-save-cpu-picks&quot;:true,&quot;mds-ab-test-previous-picks&quot;:&quot;FULL_DRAFT&quot;,&quot;show-sentry-test-error-button&quot;:false,&quot;draft-bracket-expert-brackets&quot;:true,&quot;account-subscription-copy-update&quot;:true,&quot;mds-homepage-widget-image&quot;:&quot;/images/mds-kickoff-widget-3.webp&quot;,&quot;show-mds-draft-bracket-banner&quot;:false,&quot;merlin-show-key-insights-in-navigation&quot;:true,&quot;account-is-dob-editable&quot;:false,&quot;fmds-lda-end-screen-cta-experiment&quot;:&quot;Option B&quot;,&quot;show-favourite-players&quot;:false,&quot;https-app-launchdarkly-com-pff-web-test-features-common-link-to-new-ncaa-player-profiles&quot;:false,&quot;mds-enable-mock-draft-assistant&quot;:true,&quot;mds-awards-streak-launch-date&quot;:&quot;2024-04-14 00:00:00&quot;,&quot;position-grade-header-ad&quot;:false,&quot;account-favorites-enabled&quot;:true,&quot;player-profile-show-latest-news-widget&quot;:false,&quot;mds-trade-screen-paid-user&quot;:{&quot;variant&quot;:&quot;Variant&quot;},&quot;player-profiles-natural-language-summary&quot;:true,&quot;fantasy-lda-use-espn-chrome-store-extension&quot;:true,&quot;player-profiles-widget-titles-seo&quot;:false,&quot;onboarding-variations&quot;:{&quot;order&quot;:[&quot;profile&quot;,&quot;nflTeam&quot;,&quot;topic&quot;],&quot;variant&quot;:&quot;A&quot;},&quot;subscribe-insights-image&quot;:&quot;&quot;,&quot;fantasy-hide-matchups-quick-guide&quot;:false,&quot;merlin-show-author-headshots&quot;:true,&quot;fantasy-show-keeper-modal&quot;:false,&quot;fantasy-show-mds-platform-keeper-info-modal&quot;:[],&quot;mds-grade-suggestions-experiment&quot;:{&quot;variant&quot;:&quot;Variant A&quot;},&quot;show-fantasy-draft-player-details&quot;:false,&quot;fantasy-lda-enable-new-flda-be&quot;:true,&quot;merlin-custom-big-board-add-players&quot;:true,&quot;merlin-enable-gtag&quot;:true,&quot;merlin-mds-show-history&quot;:true,&quot;subscribe-monthly-variant&quot;:&quot;premium-monthly-access&quot;,&quot;merlin-mds-leaderboard-grades&quot;:false,&quot;player-profiles-college-show-draft-grades&quot;:true,&quot;common-active-cta-promo-code&quot;:&quot;earlybird&quot;,&quot;subscribe-enable-apple-pay&quot;:true,&quot;show-adp-in-fantasy-draft-rank-card&quot;:true,&quot;fantasy-show-matchups-csv-export-button&quot;:false,&quot;merlin-mds-leaderboard-percentage&quot;:false,&quot;merlin-show-big-board-customizer&quot;:true,&quot;draft-bracket-force-state-rounds&quot;:{&quot;1&quot;:&quot;post&quot;,&quot;2&quot;:&quot;post&quot;,&quot;3&quot;:&quot;post&quot;},&quot;store-subscription-data-in-session-storage-for-gtm&quot;:true,&quot;draft-bracket-multiple-entries&quot;:true,&quot;merlin-mds-leaderboard-by-team-fans&quot;:false,&quot;cross-app-session-refresh-enabled&quot;:false,&quot;mds-prominent-start-draft-cta&quot;:{&quot;prominentCta&quot;:true,&quot;variant&quot;:&quot;Option A&quot;},&quot;mds-homepage-widget-copy&quot;:&quot;The #1 Mock Draft Sim in the Game&quot;,&quot;cosmos-enable-subscribe-checkout-flow&quot;:true,&quot;mds-multiplayer-podium-image&quot;:false,&quot;merlin-game-view-best-bets-navigation-experiment&quot;:&quot;Best Bets&quot;,&quot;show-copy-mds-result-image&quot;:true,&quot;merlin-custom-big-board-save&quot;:true,&quot;betting-enable-new-key-insights&quot;:true}"
+  data-ld-client-side-id="63fe31be539a8f136c68a4e9"
+  style="display: none;visibility: hidden"
+/>
+</div>
+
+<div data-react-component="pff.PrivacyModal" data-react-props="{&quot;showPrivacyModal&quot;:false}"></div>
+    <div id="app">
+
+
+
+  <div class="m-breaking-news">
+    <div class="m-breaking-news__text"><a class="g-ml-1" href="https://www.pff.com/subscribe?promoCode=earlybird&referrer=news-banner">
+  Early Bird Sale is on through Aug. 17 — Save 33% and get PFF+ for just $79.99, our lowest price of the year. Subscribe now →
+</a></div>
+  </div>
+
+
+  <div class="site-nav-container">
+<div data-react-component="pff.navigation.MainNavigation" data-react-props="{&quot;accountOptions&quot;:[],&quot;activeMobileTab&quot;:&quot;fantasy&quot;,&quot;bettingMenuProps&quot;:{&quot;betting_links&quot;:[{&quot;label&quot;:&quot;Player Props&quot;,&quot;path&quot;:&quot;/betting/player-props&quot;,&quot;section&quot;:&quot;player_props&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:true},{&quot;label&quot;:&quot;First TD Finder&quot;,&quot;path&quot;:&quot;/betting/first-touchdown&quot;,&quot;show_new_indicator&quot;:true,&quot;section&quot;:&quot;first_touchdown&quot;},{&quot;label&quot;:&quot;Key Insights&quot;,&quot;path&quot;:&quot;/betting/key-insights&quot;,&quot;section&quot;:&quot;key_insights&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;Best Game Bets&quot;,&quot;path&quot;:&quot;/betting/best-game-bets&quot;,&quot;section&quot;:&quot;best_game_bets&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;NFL Scores &amp; Schedule&quot;,&quot;path&quot;:&quot;/nfl/scores&quot;,&quot;section&quot;:&quot;greenline_nfl&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;NCAA Scores &amp; Schedule&quot;,&quot;path&quot;:&quot;/ncaa/scores&quot;,&quot;section&quot;:&quot;greenline_ncaa&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;NFL Power Rankings&quot;,&quot;path&quot;:&quot;/betting/nfl-power-rankings&quot;,&quot;section&quot;:&quot;team_power_ratings&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;NCAA Power Rankings&quot;,&quot;path&quot;:&quot;/betting/ncaa-power-rankings&quot;,&quot;section&quot;:&quot;college_team_power_ratings&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false},{&quot;label&quot;:&quot;Futures&quot;,&quot;path&quot;:&quot;/betting/futures&quot;,&quot;section&quot;:&quot;futures&quot;,&quot;secondary&quot;:false,&quot;tab_label&quot;:null,&quot;menu_label&quot;:null,&quot;show_in_menu&quot;:true,&quot;show_in_tabs&quot;:true,&quot;show_new_indicator&quot;:false}],&quot;betting_featured_tools&quot;:[]},&quot;collegeMenuProps&quot;:{&quot;college_links&quot;:[{&quot;label&quot;:&quot;Scores &amp; Schedule&quot;,&quot;path&quot;:&quot;/ncaa/scores&quot;},{&quot;label&quot;:&quot;Premium Stats&quot;,&quot;path&quot;:&quot;https://premium.pff.com/ncaa/teams&quot;},{&quot;label&quot;:&quot;Player Grades&quot;,&quot;path&quot;:&quot;/college/grades/position/qb&quot;},{&quot;label&quot;:&quot;Power Rankings&quot;,&quot;path&quot;:&quot;/betting/ncaa-power-rankings&quot;}],&quot;college_featured_tools&quot;:[]},&quot;dashboardUrl&quot;:&quot;https://dashboard.pff.com&quot;,&quot;draftMenuProps&quot;:{&quot;nfl_draft_featured_tools&quot;:[],&quot;nfl_draft_links&quot;:[{&quot;label&quot;:&quot;Big Board 2027&quot;,&quot;path&quot;:&quot;/draft/big-board&quot;,&quot;section&quot;:&quot;big_board&quot;},{&quot;label&quot;:&quot;Build Your Own Big Board&quot;,&quot;path&quot;:&quot;/draft/big-board?custom=true&quot;,&quot;show_new_indicator&quot;:true,&quot;section&quot;:&quot;big_board_builder&quot;},{&quot;label&quot;:&quot;Draft Pick Challenge&quot;,&quot;path&quot;:&quot;/draft/nfl-draft-pick-challenge&quot;,&quot;section&quot;:&quot;draft_pick_challenge&quot;,&quot;show_prize_indicator&quot;:true},{&quot;label&quot;:&quot;Mock Draft Simulator&quot;,&quot;path&quot;:&quot;/draft/nfl-mock-draft-simulator&quot;,&quot;section&quot;:&quot;mock_draft_tool&quot;},{&quot;label&quot;:&quot;Mock Draft Simulator Multiplayer&quot;,&quot;path&quot;:&quot;/draft/nfl-mock-draft-simulator-multiplayer&quot;,&quot;section&quot;:&quot;mds_multiplayer&quot;,&quot;show_beta_indicator&quot;:true},{&quot;label&quot;:&quot;My Mock Drafts&quot;,&quot;path&quot;:&quot;/draft/nfl-mock-draft-simulator/my-drafts&quot;,&quot;show_new_indicator&quot;:true,&quot;section&quot;:&quot;my_mock_drafts&quot;},{&quot;label&quot;:&quot;Mock Draft Simulator Leaderboards&quot;,&quot;path&quot;:&quot;/draft/nfl-mock-draft-simulator-leaderboard&quot;,&quot;show_new_indicator&quot;:true,&quot;section&quot;:&quot;mds_leaderboard_tool&quot;},{&quot;label&quot;:&quot;Draft Tracker 2026&quot;,&quot;path&quot;:&quot;/draft/tracker&quot;,&quot;show_in_tabs&quot;:false,&quot;section&quot;:&quot;draft_tracker&quot;}]},&quot;fantasyMenuProps&quot;:{&quot;user_fantasy_leagues&quot;:[],&quot;fantasy_draft_links&quot;:[{&quot;label&quot;:&quot;Fantasy Draft Kit&quot;,&quot;path&quot;:&quot;/news/fantasy-football-draft-kit-2026&quot;},{&quot;label&quot;:&quot;Mock Draft Simulator&quot;,&quot;path&quot;:&quot;/fantasy/draft/mock-draft-simulator&quot;},{&quot;label&quot;:&quot;Live Draft Assistant&quot;,&quot;path&quot;:&quot;/fantasy/draft/live-draft-assistant&quot;},{&quot;label&quot;:&quot;My Leagues&quot;,&quot;path&quot;:&quot;/fantasy/leagues&quot;},{&quot;label&quot;:&quot;Cheat Sheets&quot;,&quot;path&quot;:&quot;/fantasy/draft/cheat-sheet&quot;}],&quot;fantasy_links&quot;:[{&quot;label&quot;:&quot;Fantasy&quot;,&quot;path&quot;:&quot;/fantasy&quot;},{&quot;label&quot;:&quot;My Leagues&quot;,&quot;path&quot;:&quot;/fantasy/leagues&quot;},{&quot;label&quot;:&quot;Fantasy Mock Draft Simulator&quot;,&quot;path&quot;:&quot;/fantasy/draft/mock-draft-simulator&quot;},{&quot;label&quot;:&quot;Fantasy Live Draft Assistant&quot;,&quot;path&quot;:&quot;/fantasy/draft/live-draft-assistant&quot;},{&quot;label&quot;:&quot;Cheat Sheet&quot;,&quot;path&quot;:&quot;/fantasy/draft/cheat-sheet&quot;}],&quot;fantasy_stats_links&quot;:[{&quot;label&quot;:&quot;Rankings&quot;,&quot;path&quot;:&quot;/fantasy/rankings&quot;},{&quot;label&quot;:&quot;Matchups&quot;,&quot;path&quot;:&quot;/tools/matchups&quot;},{&quot;label&quot;:&quot;Projections&quot;,&quot;path&quot;:&quot;/fantasy/projections&quot;},{&quot;label&quot;:&quot;SOS Metric&quot;,&quot;path&quot;:&quot;/fantasy/strength-of-schedule&quot;},{&quot;label&quot;:&quot;Stats&quot;,&quot;path&quot;:&quot;/fantasy/stats&quot;},{&quot;label&quot;:&quot;Weekly Finishes&quot;,&quot;path&quot;:&quot;/fantasy/stats/finishes&quot;},{&quot;label&quot;:&quot;My Team Dashboard&quot;,&quot;path&quot;:&quot;/fantasy/my-team&quot;}],&quot;fantasy_weekly_links&quot;:[{&quot;label&quot;:&quot;WR/CB Matchup&quot;,&quot;path&quot;:&quot;/tools/matchups&quot;},{&quot;label&quot;:&quot;TE Matchup&quot;,&quot;path&quot;:&quot;/tools/matchups&quot;},{&quot;label&quot;:&quot;OL/DL Matchup&quot;,&quot;path&quot;:&quot;/tools/matchups&quot;}],&quot;fantasy_featured_tools&quot;:[{&quot;title&quot;:&quot;Player Grades&quot;,&quot;url&quot;:&quot;https://www.pff.com/nfl/grades/position/qb&quot;},{&quot;title&quot;:&quot;League Sync&quot;,&quot;url&quot;:&quot;https://www.pff.com/fantasy/league-sync?step=1&quot;}],&quot;are_draft_tools_first&quot;:true,&quot;new_fantasy_league_url&quot;:&quot;/fantasy/leagues&quot;},&quot;latestMenuProps&quot;:{&quot;featured_tools&quot;:[{&quot;title&quot;:&quot;2026 NFL QB Annual&quot;,&quot;url&quot;:&quot;https://www.pff.com/qb-annual&quot;},{&quot;title&quot;:&quot;2027 Mock Draft Simulator&quot;,&quot;url&quot;:&quot;https://www.pff.com/draft/nfl-mock-draft-simulator&quot;},{&quot;title&quot;:&quot;2027 NFL Draft Big Board&quot;,&quot;url&quot;:&quot;https://www.pff.com/draft/big-board&quot;},{&quot;title&quot;:&quot;Mock Draft Simulator Multiplayer (BETA!)&quot;,&quot;url&quot;:&quot;https://www.pff.com/draft/nfl-mock-draft-simulator-multiplayer&quot;}]},&quot;mobileTabs&quot;:[{&quot;id&quot;:&quot;featured&quot;,&quot;label&quot;:&quot;Featured&quot;},{&quot;id&quot;:&quot;nfl&quot;,&quot;label&quot;:&quot;NFL&quot;},{&quot;id&quot;:&quot;fantasy&quot;,&quot;label&quot;:&quot;Fantasy&quot;},{&quot;id&quot;:&quot;dfs&quot;,&quot;label&quot;:&quot;DFS&quot;},{&quot;id&quot;:&quot;college&quot;,&quot;label&quot;:&quot;College&quot;},{&quot;id&quot;:&quot;nfl_draft&quot;,&quot;label&quot;:&quot;NFL Draft&quot;},{&quot;id&quot;:&quot;betting&quot;,&quot;label&quot;:&quot;Betting&quot;},{&quot;id&quot;:&quot;other&quot;,&quot;label&quot;:&quot;Other Leagues&quot;},{&quot;id&quot;:&quot;fantasy_draft&quot;,&quot;label&quot;:&quot;Fantasy Draft Kit&quot;}],&quot;newsAndAnalysisLinks&quot;:[{&quot;label&quot;:&quot;All&quot;,&quot;path&quot;:&quot;/news&quot;},{&quot;label&quot;:&quot;NFL&quot;,&quot;path&quot;:&quot;/nfl&quot;},{&quot;label&quot;:&quot;Fantasy&quot;,&quot;path&quot;:&quot;/fantasy/articles&quot;},{&quot;label&quot;:&quot;College&quot;,&quot;path&quot;:&quot;/college&quot;},{&quot;label&quot;:&quot;NFL Draft&quot;,&quot;path&quot;:&quot;/draft&quot;},{&quot;label&quot;:&quot;DFS&quot;,&quot;path&quot;:&quot;/dfs&quot;},{&quot;label&quot;:&quot;Betting&quot;,&quot;path&quot;:&quot;/betting&quot;}],&quot;nflMenuProps&quot;:{&quot;nfl_featured_tools&quot;:[{&quot;title&quot;:&quot;2026 NFL QB Annual&quot;,&quot;url&quot;:&quot;https://www.pff.com/qb-annual&quot;},{&quot;title&quot;:&quot;PFF Newsletters (FREE!)&quot;,&quot;url&quot;:&quot;https://newsletters.pff.com/&quot;},{&quot;title&quot;:&quot;2027 Mock Draft Simulator&quot;,&quot;url&quot;:&quot;https://www.pff.com/draft/nfl-mock-draft-simulator&quot;},{&quot;title&quot;:&quot;The PFF App&quot;,&quot;url&quot;:&quot;https://apps.apple.com/us/app/pff-fantasy-betting-news/id1582525285&quot;}],&quot;afc_teams&quot;:[{&quot;teams&quot;:[{&quot;label&quot;:&quot;Buffalo Bills&quot;,&quot;franchise_id&quot;:4,&quot;slug&quot;:&quot;buffalo-bills&quot;},{&quot;label&quot;:&quot;Miami Dolphins&quot;,&quot;franchise_id&quot;:17,&quot;slug&quot;:&quot;miami-dolphins&quot;},{&quot;label&quot;:&quot;New York Jets&quot;,&quot;franchise_id&quot;:22,&quot;slug&quot;:&quot;new-york-jets&quot;},{&quot;label&quot;:&quot;New England Patriots&quot;,&quot;franchise_id&quot;:19,&quot;slug&quot;:&quot;new-england-patriots&quot;}],&quot;division&quot;:&quot;AFC East&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;Cincinnati Bengals&quot;,&quot;franchise_id&quot;:7,&quot;slug&quot;:&quot;cincinnati-bengals&quot;},{&quot;label&quot;:&quot;Cleveland Browns&quot;,&quot;franchise_id&quot;:8,&quot;slug&quot;:&quot;cleveland-browns&quot;},{&quot;label&quot;:&quot;Baltimore Ravens&quot;,&quot;franchise_id&quot;:3,&quot;slug&quot;:&quot;baltimore-ravens&quot;},{&quot;label&quot;:&quot;Pittsburgh Steelers&quot;,&quot;franchise_id&quot;:25,&quot;slug&quot;:&quot;pittsburgh-steelers&quot;}],&quot;division&quot;:&quot;AFC North&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;Indianapolis Colts&quot;,&quot;franchise_id&quot;:14,&quot;slug&quot;:&quot;indianapolis-colts&quot;},{&quot;label&quot;:&quot;Jacksonville Jaguars&quot;,&quot;franchise_id&quot;:15,&quot;slug&quot;:&quot;jacksonville-jaguars&quot;},{&quot;label&quot;:&quot;Houston Texans&quot;,&quot;franchise_id&quot;:13,&quot;slug&quot;:&quot;houston-texans&quot;},{&quot;label&quot;:&quot;Tennessee Titans&quot;,&quot;franchise_id&quot;:31,&quot;slug&quot;:&quot;tennessee-titans&quot;}],&quot;division&quot;:&quot;AFC South&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;Denver Broncos&quot;,&quot;franchise_id&quot;:10,&quot;slug&quot;:&quot;denver-broncos&quot;},{&quot;label&quot;:&quot;Los Angeles Chargers&quot;,&quot;franchise_id&quot;:27,&quot;slug&quot;:&quot;los-angeles-chargers&quot;},{&quot;label&quot;:&quot;Kansas City Chiefs&quot;,&quot;franchise_id&quot;:16,&quot;slug&quot;:&quot;kansas-city-chiefs&quot;},{&quot;label&quot;:&quot;Las Vegas Raiders&quot;,&quot;franchise_id&quot;:23,&quot;slug&quot;:&quot;las-vegas-raiders&quot;}],&quot;division&quot;:&quot;AFC West&quot;}],&quot;nfc_teams&quot;:[{&quot;teams&quot;:[{&quot;label&quot;:&quot;Washington Commanders&quot;,&quot;franchise_id&quot;:32,&quot;slug&quot;:&quot;washington-commanders&quot;},{&quot;label&quot;:&quot;Dallas Cowboys&quot;,&quot;franchise_id&quot;:9,&quot;slug&quot;:&quot;dallas-cowboys&quot;},{&quot;label&quot;:&quot;Philadelphia Eagles&quot;,&quot;franchise_id&quot;:24,&quot;slug&quot;:&quot;philadelphia-eagles&quot;},{&quot;label&quot;:&quot;New York Giants&quot;,&quot;franchise_id&quot;:21,&quot;slug&quot;:&quot;new-york-giants&quot;}],&quot;division&quot;:&quot;NFC East&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;Chicago Bears&quot;,&quot;franchise_id&quot;:6,&quot;slug&quot;:&quot;chicago-bears&quot;},{&quot;label&quot;:&quot;Detroit Lions&quot;,&quot;franchise_id&quot;:11,&quot;slug&quot;:&quot;detroit-lions&quot;},{&quot;label&quot;:&quot;Green Bay Packers&quot;,&quot;franchise_id&quot;:12,&quot;slug&quot;:&quot;green-bay-packers&quot;},{&quot;label&quot;:&quot;Minnesota Vikings&quot;,&quot;franchise_id&quot;:18,&quot;slug&quot;:&quot;minnesota-vikings&quot;}],&quot;division&quot;:&quot;NFC North&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;Tampa Bay Buccaneers&quot;,&quot;franchise_id&quot;:30,&quot;slug&quot;:&quot;tampa-bay-buccaneers&quot;},{&quot;label&quot;:&quot;Atlanta Falcons&quot;,&quot;franchise_id&quot;:2,&quot;slug&quot;:&quot;atlanta-falcons&quot;},{&quot;label&quot;:&quot;Carolina Panthers&quot;,&quot;franchise_id&quot;:5,&quot;slug&quot;:&quot;carolina-panthers&quot;},{&quot;label&quot;:&quot;New Orleans Saints&quot;,&quot;franchise_id&quot;:20,&quot;slug&quot;:&quot;new-orleans-saints&quot;}],&quot;division&quot;:&quot;NFC South&quot;},{&quot;teams&quot;:[{&quot;label&quot;:&quot;San Francisco 49ers&quot;,&quot;franchise_id&quot;:28,&quot;slug&quot;:&quot;san-francisco-49ers&quot;},{&quot;label&quot;:&quot;Arizona Cardinals&quot;,&quot;franchise_id&quot;:1,&quot;slug&quot;:&quot;arizona-cardinals&quot;},{&quot;label&quot;:&quot;Los Angeles Rams&quot;,&quot;franchise_id&quot;:26,&quot;slug&quot;:&quot;los-angeles-rams&quot;},{&quot;label&quot;:&quot;Seattle Seahawks&quot;,&quot;franchise_id&quot;:29,&quot;slug&quot;:&quot;seattle-seahawks&quot;}],&quot;division&quot;:&quot;NFC West&quot;}],&quot;nfl_links&quot;:[{&quot;label&quot;:&quot;Scores &amp; Schedule&quot;,&quot;path&quot;:&quot;/nfl/scores&quot;},{&quot;label&quot;:&quot;Premium Stats&quot;,&quot;path&quot;:&quot;https://premium.pff.com/nfl/teams&quot;},{&quot;label&quot;:&quot;Player Grades&quot;,&quot;path&quot;:&quot;/nfl/grades/position/qb&quot;},{&quot;label&quot;:&quot;Power Rankings&quot;,&quot;path&quot;:&quot;/betting/nfl-power-rankings&quot;},{&quot;label&quot;:&quot;Free Agent Rankings&quot;,&quot;path&quot;:&quot;/nfl/free-agency&quot;}]},&quot;otherMenuProps&quot;:{&quot;other_links&quot;:[{&quot;label&quot;:&quot;AAF Premium Stats&quot;,&quot;path&quot;:&quot;https://premium.pff.com/aaf/teams&quot;},{&quot;label&quot;:&quot;UFL Premium Stats&quot;,&quot;path&quot;:&quot;https://premium.pff.com/ufl/teams&quot;}]},&quot;premiumUrl&quot;:&quot;https://premium.pff.com/nfl/teams&quot;,&quot;subscribeUrl&quot;:&quot;https://www.pff.com/join?product=plus&amp;referrer=nav_bar&quot;}"></div>
+  </div>
+
+      <main id="main" class="m-main">
+
+
+
+
+
+<div class="g-tab-nav g-mb-0 g-hidden-xl-max" data-gtm-id="tab_navigation">
+  <div class="g-tab-nav__inner">
+    <div class="g-tab-nav__tabs-track">
+      <div class="g-tab-nav__tabs">
+        <div class="g-tab-nav__tabs-inner">
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/news">
+All
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/nfl">
+NFL
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link g-tab-nav__link--active" href="/fantasy/articles">
+Fantasy
+
+                  <span class="sr-only"> - current</span>
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/college">
+College
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/draft">
+NFL Draft
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/dfs">
+DFS
+
+</a>
+            </div>
+
+            <div class="g-tab-nav__item">
+
+<a class="g-tab-nav__link" href="/betting">
+Betting
+
+</a>
+            </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="m-content">
+  <div class="g-container g-container--padded">
+    <div class="g-grid">
+      <div class="g-span-12 g-span-9-lg">
+        <div class="g-card">
+          <div class="m-article" data-gtm-id="article_page">
+            <div class="m-article__header">
+
+                <svg class="g-icon g-icon--small g-icon--blue" width="24" height="24" aria-hidden="true" focusable="false" role="presentation">
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-ribbon"></use>
+                </svg>
+                <span class="g-label g-mr-2">Premium Content</span>
+
+                  <a href="https://subscribe.pff.com" class="g-btn g-btn--blue g-btn--sm" data-gtm-id="article_cta_title_badge">Sign Up</a>
+
+
+              <h1 class="g-h1">2026 Fantasy Football Rankings: PPR top 200 for drafts</h1>
+            </div>
+
+            <div class="m-article__hero">
+
+
+
+              <figure>
+                <picture class="m-article__hero-image">
+                  <source media="(max-width: 375px)" srcset="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=359&amp;h=202, https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=718&amp;h=404 2x">
+                  <source media="(max-width: 575px)" srcset="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=576&amp;h=324, https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1152&amp;h=648 2x">
+                  <img src="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&amp;h=675" alt="" srcset="https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1200&amp;h=675, https://media.pff.com/2025/09/Nacua-Puka-Feature-scaled.jpg?w=1912&amp;h=1076 2x">
+                </picture>
+
+              </figure>
+
+
+            </div>
+
+            <div class="m-article__byline">
+              <span class="m-micro-copy m-micro-copy--dark author-meta-post">
+<!-- headshot variant sizing -->
+
+<!-- To have a fixed space container to handling CLS while rendering author headshots-->
+<!-- if more than 3 author images are there display PFF logo-->
+
+<!-- only render when any one of the authors have avatar to show and show_author_headshots FF is enabled -->
+
+    <span style="min-width: 2.5rem;">
+<div data-react-component="pff.AuthorHeadshots" data-react-props="{&quot;authorsList&quot;:[{&quot;id&quot;:211,&quot;description&quot;:&quot;Nathan joined PFF in as a Player Participation Analyst. He’s played several crucial roles at the company, including Director of Analytics and Software Developer. He currently works as Lead Fantasy Football Analyst and Senior Software Engineer. Nathan went to the University of Wisconsin-Eau Claire and has a Bachelor of Science in Actuarial Science. He&#39;s No. 2 ranker at FantasyPros in 2020, and No. 3 in 2019.&quot;,&quot;title&quot;:&quot;Senior Fantasy Analyst / Software Developer&quot;,&quot;category&quot;:&quot;1&quot;,&quot;url&quot;:null,&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;slug&quot;:&quot;nathan-jahnke&quot;,&quot;twitter&quot;:&quot;PFF_NateJahnke&quot;,&quot;display_name&quot;:&quot;Nathan Jahnke&quot;,&quot;author_alumni&quot;:null,&quot;author_knows_about&quot;:[]}],&quot;variant&quot;:&quot;md&quot;}"></div>
+    </span>
+
+                <div>
+
+By
+
+
+
+<a class="" data-gtm-id="article_author" href="/analyst/nathan-jahnke">Nathan Jahnke</a>
+
+
+
+                <br />
+                  <time datetime="2026-07-20T09:00:00Z">Posted Jul 20, 2026 5:00 am EDT</time>
+                  <span class="u-hide-first">
+
+
+                  </span>
+                </div>
+              </span>
+            </div>
+
+            <div class="m-article__main">
+
+                <article class="m-article__content" data-gtm-id="article_content">
+                  <div class="m-longform-copy">
+
+<ul class="wp-block-list">
+<li><a href="https://www.pff.com/nfl/players/jahmyr-gibbs/122474"><strong>Jahmyr Gibbs</strong></a><strong> takes the top spot:</strong> The <a href="https://www.pff.com/nfl/teams/detroit-lions/11">Detroit Lions</a> running back ranks ahead of <a href="https://www.pff.com/nfl/players/bijan-robinson/123126">Bijan Robinson</a> and <a href="https://www.pff.com/nfl/players/christian-mccaffrey/11763">Christian McCaffrey</a>, in large part thanks to the consistently good play of the <a href="https://www.pff.com/nfl/teams/detroit-lions/11" target="_blank" rel="noopener noreferrer">Lions</a>’ offense.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li><a href="https://www.pff.com/nfl/players/puka-nacua/100632"><strong>Puka Nacua</strong></a><strong> leads all wide receivers:</strong> The <a href="https://www.pff.com/nfl/teams/los-angeles-rams/26">Los Angeles Rams</a> wideout places first at the position in PFF receiving grade over the last few seasons.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li><strong>Examine rankings in other formats:</strong> For Rankings in PPR, Half-PPR, Standard, Superflex and Dynasty Leagues, check out <a href="https://www.pff.com/fantasy/rankings/draft">PFF’s fantasy football rankings page</a>.</li>
+</ul>
+
+
+
+<figure class="wp-block-image"><a href="https://www.pff.com/subscribe" target="_blank" rel="noreferrer noopener"><img loading="lazy" decoding="async" width="1024" height="188" src="https://media.pff.com/2026/05/Countdown_banner-1-1024x188.jpg" alt="" class="wp-image-628761" srcset="https://media.pff.com/2026/05/Countdown_banner-1-1024x188.jpg 1024w, https://media.pff.com/2026/05/Countdown_banner-1-300x55.jpg 300w, https://media.pff.com/2026/05/Countdown_banner-1-768x141.jpg 768w, https://media.pff.com/2026/05/Countdown_banner-1-1536x282.jpg 1536w, https://media.pff.com/2026/05/Countdown_banner-1-2048x375.jpg 2048w" sizes="auto, (max-width: 706px) 89vw, (max-width: 767px) 82vw, 740px" /></a></figure>
+
+
+
+<p>We are getting closer and closer to the start of the NFL regular season, and plenty of fantasy drafts are already underway. These rankings are built for single-quarterback PPR redraft leagues, with analysis on all 150 players below and more players added in the coming weeks. If you want my complete top 500, check out our <a href="https://www.pff.com/fantasy/rankings/draft">rankings page</a>.</p>
+
+
+
+<p><strong>Last updated: Monday, July 20</strong></p>
+
+
+
+<p>
+<div data-react-component="pff.PremiumArticlePaywall" data-react-props="{&quot;paywallType&quot;:&quot;variant&quot;,&quot;postInfo&quot;:{&quot;category&quot;:&quot;Fantasy&quot;},&quot;subscribeUrl&quot;:&quot;https://www.pff.com/join?product=plus&amp;referrer=premium-news-1&quot;}"></div>
+</p>
+
+                  </div>
+                </article>
+
+
+              <footer class="m-article__footer" data-gtm-id="article_footer">
+                <div class="m-article__footer-section u-text-center">
+                  <div class="g-ui-row g-ui-row--space-around">
+                    <div class="g-ui-row__item">
+                      <a href="https://www.pff.com/fantasy/articles">
+                        <strong>Read More PFF Fantasy News & Analysis</strong>
+                      </a>
+                    </div>
+
+                    <div class="g-ui-row__item">
+                      <span class="g-label g-mx-1">Share</span>
+                      <a class="g-mx-1" href="http://www.twitter.com/share?url=https://www.pff.com/news/fantasy-football-rankings-ppr-rankings-for-drafts" target="_blank" class="">
+                        <svg width="24" height="24" class="g-icon g-icon--link" aria-hidden="false" focusable="true" aria-label="Share on Twitter">
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-twitter"></use>
+                        </svg>
+                      </a>
+                      <a class="g-mx-1" href="https://www.facebook.com/sharer/sharer.php?u=https://www.pff.com/news/fantasy-football-rankings-ppr-rankings-for-drafts" class="">
+                        <svg width="24" height="24" class="g-icon g-icon--link" aria-hidden="false" focusable="true" aria-label="Share on Facebook">
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-facebook"></use>
+                        </svg>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+
+
+
+
+
+                    <div class="m-article__footer-section m-article__footer-section--hidden-lg-down">
+
+<div class="m-sponsor m-sponsor--wide m-sponsor--ws" data-gtm-id="sponsor_fantasy_wide">
+  <a href="https://www.westernsouthern.com/pff?utm_source=pff&utm_medium=paid&utm_campaign=pff_banner_ad_ws&utm_term=1456x180&utm_content=jumpstart" target="_blank" rel="noreferrer noopener sponsored">
+    <picture>
+      <source srcset="/images/sponsor/ws/W&S_PFF_RightPlay_728x90.webp" media="(min-width: 600px)">
+      <img src="/images/sponsor/ws/W&S_PFF_RightPlay_728x90.webp" alt="Call the Right Play for Every Life Stage. Western & Southern Financial Group.">
+    </picture>
+  </a>
+  <div class="g-label g-mx-1">Sponsor</div>
+</div>
+
+                    </div>
+
+
+
+
+              </footer>
+
+            </div>
+<div class="m-article__latest-headlines" data-react-component="pff.LatestArticles" data-react-props="{&quot;currentPostId&quot;:630715,&quot;fireSubscribeModal&quot;:false,&quot;posts&quot;:[{&quot;id&quot;:631488,&quot;name&quot;:&quot;fantasy-football-2026-league-winning-running-backs-for-drafts&quot;,&quot;date&quot;:&quot;2026-08-04 09:15:00&quot;,&quot;title&quot;:&quot;Fantasy Football 2026: League-winning running backs for drafts&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-2026-league-winning-running-backs-for-drafts/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;These three running backs check the box for talent, opportunity and cost, boasting the potential to dramatically outperform their current ADPs in 2026.&quot;,&quot;thumbnail&quot;:&quot;2026/08/Kenneth-Walker-Chiefs-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:true,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;&quot;},{&quot;id&quot;:631501,&quot;name&quot;:&quot;2026-fantasy-football-rankings-standard-top-200-for-drafts&quot;,&quot;date&quot;:&quot;2026-08-04 09:00:00&quot;,&quot;title&quot;:&quot;2026 Fantasy Football Rankings: Standard top 200 for drafts&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;},{&quot;id&quot;:1,&quot;name&quot;:&quot;NFL&quot;,&quot;slug&quot;:&quot;nfl&quot;}],&quot;meta_description&quot;:&quot;&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/2026-fantasy-football-rankings-standard-top-200-for-drafts/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Nathan Jahnke presents his first standard rankings ahead of the 2026 fantasy football campaign.&quot;,&quot;thumbnail&quot;:&quot;2025/10/Taylor-Jonathan-Feature-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:true,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;&quot;},{&quot;id&quot;:631430,&quot;name&quot;:&quot;fantasy-football-jahmyr-gibbs-2026&quot;,&quot;date&quot;:&quot;2026-08-03 13:35:40&quot;,&quot;title&quot;:&quot;Jahmyr Gibbs fantasy outlook 2026: The contract talk doesn&#39;t change that he&#39;s the No. 1 pick&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[&quot;122474&quot;],&quot;teams&quot;:[&quot;11&quot;],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;Explore Jahmyr Gibbs&#39; 2026 fantasy outlook with PFF Grades, advanced stats and projected workload. See the grades.&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-jahmyr-gibbs-2026/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Jahmyr Gibbs enters the 2026 fantasy football season as the top overall running back after averaging at least 21 PPR points per game in each of the past two years. David Montgomery&#39;s departure creates even more touchdown upside, while Detroit&#39;s offensive line changes remain the primary concern.&quot;,&quot;thumbnail&quot;:&quot;2025/11/Jahmyr-Gibbs-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;Jahmyr Gibbs fantasy football outlook 2026 | PFF&quot;},{&quot;id&quot;:631416,&quot;name&quot;:&quot;fantasy-football-deebo-samuel-2026&quot;,&quot;date&quot;:&quot;2026-08-03 13:22:40&quot;,&quot;title&quot;:&quot;Deebo Samuel fantasy outlook 2026: Ricky Pearsall&#39;s surgery opens the door to another top-10 stretch&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[&quot;48274&quot;],&quot;teams&quot;:[&quot;28&quot;],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;See why Deebo Samuel is a fantasy football value after returning to the 49ers with PFF Grades and advanced stats. Unlock the data.&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-deebo-samuel-2026/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Deebo Samuel returns to the San Francisco 49ers with renewed fantasy football value after Ricky Pearsall&#39;s injury created an opening in the starting lineup. Samuel has repeatedly delivered top-10 fantasy production when healthy thanks to his unique combination of receiving and rushing usage.&quot;,&quot;thumbnail&quot;:&quot;2026/08/Deebo-Samuel-49ers.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;Deebo Samuel fantasy football outlook for 2026 | PFF&quot;},{&quot;id&quot;:631401,&quot;name&quot;:&quot;fantasy-football-perfect-draft-strategy-hub&quot;,&quot;date&quot;:&quot;2026-08-03 09:45:00&quot;,&quot;title&quot;:&quot;Fantasy football draft strategy: Perfect guides for every draft slot&quot;,&quot;author&quot;:&quot;PFF.com&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;Find the perfect fantasy football draft strategy for every league size with PFF Grades and tools. Check the rankings.&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-perfect-draft-strategy-hub/&quot;,&quot;multiple_authors&quot;:[&quot;PFF.com&quot;],&quot;excerpt&quot;:&quot;The best draft strategy depends on where you&#39;re picking. Use this guide to find Nathan Jahnke&#39;s perfect draft strategy for your league, with round-by-round plans for 10-, 12- and 14-team formats, plus strategies tailored to every draft slot.&quot;,&quot;thumbnail&quot;:&quot;2026/06/Justin-Jefferson-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:null,&quot;thumbnail&quot;:null},&quot;display_name&quot;:&quot;PFF.com&quot;}],&quot;meta_title&quot;:&quot;Fantasy football perfect draft strategy hub | PFF&quot;},{&quot;id&quot;:630720,&quot;name&quot;:&quot;fantasy-football-2026-perfect-draft-strategy-round-by-round-for-12-team-leagues&quot;,&quot;date&quot;:&quot;2026-08-03 09:30:00&quot;,&quot;title&quot;:&quot;Fantasy Football 2026: Perfect draft strategy, round by round for 12-team leagues&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;Build your fantasy football roster with a round-by-round draft strategy backed by PFF Grades and advanced stats. Unlock the data.&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-2026-perfect-draft-strategy-round-by-round-for-12-team-leagues/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Nathan Jahnke highlights his perfect draft strategy for 12-team, single-quarterback PPR fantasy leagues ahead of the 2026 season.&quot;,&quot;thumbnail&quot;:&quot;2025/09/Tucker-Kraft-PS-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:true,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;Fantasy football 12-team PPR draft strategy | PFF&quot;},{&quot;id&quot;:631389,&quot;name&quot;:&quot;fantasy-football-sleeper-wide-receivers-2026&quot;,&quot;date&quot;:&quot;2026-08-03 09:15:00&quot;,&quot;title&quot;:&quot;Fantasy Football: Wide receiver sleepers for 2026 drafts&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;Find five late-round fantasy football wide receivers backed by PFF Grades and advanced stats. See the grades.&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-sleeper-wide-receivers-2026/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Fantasy football managers searching for late-round wide receiver value should target players with expanding roles and strong underlying production. Josh Downs, Xavier Worthy, Jayden Higgins, Rashid Shaheed and Adonai Mitchell all have realistic breakout paths based on opportunity and performance discussed in the article.&quot;,&quot;thumbnail&quot;:&quot;2026/01/Rashid-Shaheed-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;Fantasy football late-round WR sleepers for 2026 | PFF&quot;},{&quot;id&quot;:631041,&quot;name&quot;:&quot;fantasy-football-rankings-ppr-top-300-for-drafts&quot;,&quot;date&quot;:&quot;2026-08-03 09:00:00&quot;,&quot;title&quot;:&quot;2026 Fantasy Football Rankings: PPR top 300 for drafts&quot;,&quot;author&quot;:&quot;Nathan Jahnke&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-rankings-ppr-top-300-for-drafts/&quot;,&quot;multiple_authors&quot;:[&quot;Nathan Jahnke&quot;],&quot;excerpt&quot;:&quot;Nathan Jahnke provides his top 300 players and units in PPR leagues for the 2026 fantasy football season.&quot;,&quot;thumbnail&quot;:&quot;2025/10/JaMarr-Chase-PS-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:true,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min.png&quot;,&quot;thumbnail&quot;:&quot;https://media.pff.com/2025/11/Nathan-Jahnke-min-150x150.png&quot;},&quot;display_name&quot;:&quot;Nathan Jahnke&quot;}],&quot;meta_title&quot;:&quot;&quot;},{&quot;id&quot;:631382,&quot;name&quot;:&quot;fantasy-football-team-target-vacuums-going-into-2026&quot;,&quot;date&quot;:&quot;2026-08-02 09:30:00&quot;,&quot;title&quot;:&quot;Fantasy Football: Team target vacuums going into 2026&quot;,&quot;author&quot;:&quot;Ryan Conway&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-team-target-vacuums-going-into-2026/&quot;,&quot;multiple_authors&quot;:[&quot;Ryan Conway&quot;],&quot;excerpt&quot;:&quot;This offseason created several major target vacuums across the NFL, with five teams losing at least 128 targets from key outgoing pass-catchers. Such departures create significant uncertainty in their respective passing games, but it also represents an opportunity for fantasy managers.&quot;,&quot;thumbnail&quot;:&quot;2025/09/Burden-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:null,&quot;thumbnail&quot;:null},&quot;display_name&quot;:&quot;Ryan Conway&quot;}],&quot;meta_title&quot;:&quot;&quot;},{&quot;id&quot;:631377,&quot;name&quot;:&quot;fantasy-football-2026-running-backs-limited-by-a-lack-of-receiving-work&quot;,&quot;date&quot;:&quot;2026-08-02 09:15:00&quot;,&quot;title&quot;:&quot;Fantasy Football 2026: Running backs limited by a lack of receiving work&quot;,&quot;author&quot;:&quot;Ryan Conway&quot;,&quot;content&quot;:&quot;&quot;,&quot;media&quot;:null,&quot;players&quot;:[],&quot;teams&quot;:[],&quot;league_week&quot;:&quot;&quot;,&quot;categories&quot;:[{&quot;id&quot;:4,&quot;name&quot;:&quot;Fantasy&quot;,&quot;slug&quot;:&quot;fantasy&quot;}],&quot;meta_description&quot;:&quot;&quot;,&quot;permalink&quot;:&quot;https://www.pff.com/news/fantasy-football-2026-running-backs-limited-by-a-lack-of-receiving-work/&quot;,&quot;multiple_authors&quot;:[&quot;Ryan Conway&quot;],&quot;excerpt&quot;:&quot;In fantasy football, getting a running back with genuine receiving chops can be the difference between a league-winner and just a solid, low-end back that will never crack the top five at their position.&quot;,&quot;thumbnail&quot;:&quot;2025/07/Henry-Derrick-Feature-scaled.jpg&quot;,&quot;caption&quot;:&quot;&quot;,&quot;premium_content&quot;:false,&quot;related_post_ids&quot;:[],&quot;named_article_type&quot;:&quot;standard&quot;,&quot;authors_meta&quot;:[{&quot;avatar&quot;:{&quot;full&quot;:null,&quot;thumbnail&quot;:null},&quot;display_name&quot;:&quot;Ryan Conway&quot;}],&quot;meta_title&quot;:&quot;&quot;}],&quot;vertical&quot;:&quot;Fantasy&quot;}"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="g-span-12 g-span-3-lg g-start-10-lg">
+<div id="news-vertical-tools" class="g-grid">
+
+
+
+
+
+
+<div class="g-span-12" data-gtm-id="sponsor_fantasy">
+  <div class="m-sponsor m-sponsor--ws">
+    <a href="https://www.westernsouthern.com/pff?utm_source=pff&utm_medium=paid&utm_campaign=pff_banner_ad_ws&utm_term=600x500&utm_content=jumpstart" target="_blank" rel="noreferrer noopener sponsored">
+      <img src="/images/sponsor/ws/W&S_PFF_RightPlay_300x250.webp" alt="Call the Right Play for Every Life Stage. Western & Southern Financial Group.">
+    </a>
+    <div class="g-label g-mx-1">Sponsor</div>
+  </div>
+</div>
+
+
+
+
+  <div class="g-span-12">
+    <div class="g-card g-card--secondary g-card--border-gray" data-gtm-id="featured_tools">
+      <header class="g-card__header">
+        <div class="g-h3 g-ma-0">Fantasy Featured Tools</div>
+      </header>
+      <div class="g-card__content">
+        <ul class="m-tool-list">
+
+
+<li class="m-tool-list__item">
+  <div class="m-tool-list__header">
+
+<a class="g-link--gray-darker m-tool-list__link" href="https://www.pff.com/fantasy/rankings">
+      <div class="g-h5 g-ma-0">Fantasy Football Rankings</div>
+</a>
+  </div>
+
+    <p class="m-excerpt m-excerpt--small">Dominate your fantasy football strategy with PFF's Rankings, providing expert insights and analysis for every position and league format to power your draft and weekly lineup optimizations</p>
+
+
+    <p class="m-micro-copy g-mb-1">Available with</p>
+
+<button class=" pff-plus-badge" onclick="document.dispatchEvent(new Event('pffBadgeLockClick'))">
+  <img src="/images/webui/pff_plus_logo.svg" alt="PFF+" class=" m-cta__sub-logo" />
+</button>
+
+
+
+</li>
+
+
+<li class="m-tool-list__item">
+  <div class="m-tool-list__header">
+
+<a class="g-link--gray-darker m-tool-list__link" href="https://www.pff.com/fantasy/projections">
+      <div class="g-h5 g-ma-0">Projections</div>
+</a>
+  </div>
+
+
+</li>
+
+
+<li class="m-tool-list__item">
+  <div class="m-tool-list__header">
+
+<a class="g-link--gray-darker m-tool-list__link" href="https://www.pff.com/nfl/grades/position/qb">
+      <div class="g-h5 g-ma-0">Player Grades</div>
+</a>
+  </div>
+
+
+</li>
+
+
+<li class="m-tool-list__item">
+  <div class="m-tool-list__header">
+
+<a class="g-link--gray-darker m-tool-list__link" href="https://www.pff.com/fantasy/league-sync?step=1">
+      <div class="g-h5 g-ma-0">League Sync</div>
+</a>
+  </div>
+
+
+</li>
+
+        </ul>
+      </div>
+      <footer class="g-card__footer">
+        <a href="/tools" class="g-btn g-btn--block">More Tools</a>
+      </footer>
+    </div>
+  </div>
+
+</div>
+
+<div id="news-vertical-non-tools" class="g-grid">
+
+
+      <div class="g-span-12 g-span-6-sm g-span-12-lg">
+<div class="m-cta m-cta--sidebar" data-gtm-id="cta_premium_sidebar">
+  <header class="m-cta__header">
+    <div class="g-h5 m-cta__title">Subscriptions</div>
+  </header>
+
+  <div class="m-cta__sub m-cta__sub--sidebar g-mb-4">
+    <div class="m-cta__sub-summary">
+<button class=" pff-plus-badge" onclick="document.dispatchEvent(new Event('pffBadgeLockClick'))">
+  <img src="/images/webui/pff_plus_logo.svg" alt="PFF+" class="g-mb-2 m-cta__sub-logo" />
+</button>
+
+      <p class="m-micro-copy m-micro-copy--light m-micro-copy--small g-mb-0">
+        Unlock the 2024 Fantasy Draft Kit, with Live Draft Assistant, Fantasy Mock Draft Sim, Rankings & PFF Grades
+      </p>
+    </div>
+    <div class="m-cta__sub-pricing">
+        <div class="m-cta-price">$24.99/mo</span></div>
+        <span class="m-sub-or">OR</span>
+        <div class="m-cta-price">$119.99/yr</span></div>
+    </div>
+  </div>
+
+  <footer class="m-cta__footer">
+    <a href="https://www.pff.com/join?product=plus&amp;referrer=premium-news-1" class="g-btn g-btn--block g-btn--green g-mb-2">Sign Up</a>
+  </footer>
+</div>
+
+      </div>
+
+
+</div>
+
+
+      </div>
+    </div>
+  </div>
+</div>
+
+      </main>
+<div class="m-footer d-print-none" data-gtm-id="footer">
+
+    <div class="m-footer__toc">
+      <div class="g-container g-container--padded">
+        <div class="m-footer__toc-inner">
+          <div class="m-footer__section">
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">About Us</div>
+              <ul class="m-footer__link-list">
+                <li><a href="/jobs">Jobs</a></li>
+                <li>
+                  <a href="https://b2b.pff.com/news" target="_blank" rel="noopener"
+                    >Newsroom</a
+                  >
+                </li>
+              </ul>
+            </div>
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">News & Analysis</div>
+              <ul class="m-footer__link-list">
+                <li><a href="/nfl">NFL</a></li>
+                <li><a href="/betting">Betting</a></li>
+                <li><a href="/fantasy">Fantasy</a></li>
+                <li><a href="/dfs">DFS</a></li>
+                <li><a href="/college">College</a></li>
+                <li><a href="/draft">NFL Draft</a></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="m-footer__section">
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">Tools</div>
+              <ul class="m-footer__link-list">
+                <li><a href="/betting/player-props">Player Props</a></li>
+                <li><a href="/betting/first-touchdown">First TD Finder</a></li>
+                <li><a href="/nfl/scores">NFL Score And Schedules</a></li>
+                <li><a href="/nfl/grades/position/qb">Player Grades</a></li>
+                <li><a href="https://premium.pff.com/nfl/teams">Premium Stats</a>
+                </li>
+                <li><a href="/nfl-power-rankings">Power Rankings</a></li>
+                <li><a href="/tools/matchups">Matchups</a></li>
+                <li>
+                  <a href="/news/fantasy-football-draft-kit-2026"
+                    >Fantasy Draft Kit</a
+                  >
+                </li>
+                <li><a href="/fantasy/rankings">Fantasy Rankings</a></li>
+                <li>
+                  <a href="/draft/big-board">
+                    Big Board 2027
+                  </a>
+                </li>
+                <li>
+                  <a href="/draft/nfl-mock-draft-simulator">Mock Draft Simulator</a>
+                </li>
+              </ul>
+            </div>
+
+            <div class="m-footer__group">
+              <div class="g-label g-label--light g-mb-2">Partnerships</div>
+              <ul class="m-footer__link-list">
+                <li>
+                  <a href="https://sportsdata.io" target="_blank">
+                    <img
+                      src="https://sportsdata.io/assets/images/badges/sportsdataio_light_100.png?v=1"
+                      alt="Sports Data Provider"
+                      width="100"
+                      height="19"
+                    />
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="m-footer__section">
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">Join PFF</div>
+              <ul class="m-footer__link-list">
+
+                  <li><a href="https://www.pff.com/join?product=plus&amp;referrer=footer">Subscribe</a></li>
+
+                <li><a href="/pff-offers">Special Offers</a></li>
+                <li><a href="https://shop.pff.com">PFF Merchandise</a></li>
+              </ul>
+            </div>
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">Customer Service</div>
+              <ul class="m-footer__link-list">
+                <li>
+                  <a
+                    href="https://profootballfocussupport.zendesk.com/hc/en-us/requests/new"
+                    >Contact Support</a
+                  >
+                </li>
+                <li>
+                  <a href="https://profootballfocussupport.zendesk.com/hc/en-us"
+                    >Frequently Asked Questions</a
+                  >
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="m-footer__section">
+            <div class="m-footer__group">
+              <div class="g-h4 u-text-white g-mb-4">Follow Us</div>
+              <ul class="m-footer__link-list">
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-twitter"></use>
+                  </svg>
+                  <a
+                    href="https://twitter.com/pff"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Twitter</a
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-instagram"></use>
+                  </svg>
+                  <a
+                    href="https://www.instagram.com/profootballfocus/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Instagram</a
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-youtube"></use>
+                  </svg>
+                  <a
+                    href="https://www.youtube.com/profootballfocus"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >YouTube</a
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-facebook"></use>
+                  </svg>
+                  <a
+                    href="https://www.facebook.com/ProFootballFocus/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Facebook</a
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-discord"></use>
+                  </svg>
+                  <a
+                    href="https://discord.gg/2WEqu8e7"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >Discord</a
+                  >
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-podcast"></use>
+                  </svg>
+                  <a href="/podcasts">Podcasts</a>
+                </li>
+                <li>
+                  <svg
+                    class="g-icon g-mr-1"
+                    width="24"
+                    height="24"
+                    aria-hidden="true"
+                    focusable="false"
+                    role="presentation"
+                  >
+<use href="https://www.pff.com/images/icon-symbols.svg#g-icon-rss"></use>
+                  </svg>
+                  <a href="/pff-rss">RSS</a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    <div class="m-footer__base">
+      <div class="g-container g-container--padded">
+        <div class="m-footer__base-inner">
+          <div class="m-footer__secondary-links">
+            <a href="/sitemap">Site Map</a>
+            <a href="/privacy">Privacy Policy</a>
+            <a href="/terms">Terms of Use</a>
+            <a href="/accessibility-statement">Accessibility Statement</a>
+            <a
+              href="#"
+              onclick="event.preventDefault(); document.dispatchEvent(new Event('cookieSettingsClick'))"
+            >
+              Cookie Settings
+            </a>
+
+          </div>
+          <div class="m-footer__copyright">
+            <img src="/images/pff-logo.svg" alt="PFF logo" class="kyber-svg kyber-svg-pff-logo g-svg g-svg-pff-logo site-nav__logo g-inline">
+            &copy; 2026 PFF - all rights reserved.
+          </div>
+        </div>
+      </div>
+    </div>
+
+</div>
+
+    </div>
+    <script src="/js/shared_nav-cc14caf63ba80f3331b48189fe4256cf.js?vsn=d"></script>
+
+      <script src="/js/default_entry-9d4b78e91359acc19ded521a3db5e22e.js?vsn=d"></script>
+
+      <script src="/js/lite_yt_embed_entry-654393aae9a055c826328ec1eb7f400f.js?vsn=d"></script>
+
+      <script src="/js/news_article_paywall_entry-d819c9b07b36538da2944757021c5d3c.js?vsn=d"></script>
+
+      <script src="/js/news_article-b291225cfc740ecf9b31382adcb70f21.js?vsn=d"></script>
+
+    <!--
+      Klaviyo Site Tracking Setup:
+      1. Initialize _klOnsite queue unconditionally (no cookies, just an array) - enables event queueing
+      2. Track page views and identify users unconditionally (queues in _klOnsite)
+      3. Load actual Klaviyo library only after marketing consent (sets cookies, requires consent)
+    -->
+    <script type="text/javascript">
+      !function(){if(!window.klaviyo){window._klOnsite=window._klOnsite||[];try{window.klaviyo=new Proxy({},{get:function(n,i){return"push"===i?function(){var n;(n=window._klOnsite).push.apply(n,arguments)}:function(){for(var n=arguments.length,o=new Array(n),w=0;w<n;w++)o[w]=arguments[w];var t="function"==typeof o[o.length-1]?o.pop():void 0,e=new Promise((function(n){window._klOnsite.push([i].concat(o,[function(i){t&&t(i),n(i)}]))}));return e}}})}catch(n){window.klaviyo=window.klaviyo||[],window.klaviyo.push=function(){var n;(n=window._klOnsite).push.apply(n,arguments)}}}}();
+      (!'') ||
+        klaviyo.push(['identify', {
+          'email' : ''
+        }]
+      );
+      klaviyo.track("Viewed Page", {
+        url: window.location.href
+      })
+    </script>
+    <script type="text/plain" data-cookieconsent="marketing" src="https://static.klaviyo.com/onsite/js/U7MhhG/klaviyo.js"></script>
+  </body>
+</html>
