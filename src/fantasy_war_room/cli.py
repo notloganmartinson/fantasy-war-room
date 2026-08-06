@@ -17,7 +17,12 @@ from fantasy_war_room.config import (
     save_settings,
 )
 from fantasy_war_room.errors import ConfigurationError, ExitCode, FwrError, NotFoundError
-from fantasy_war_room.intelligence import import_rankings, normalize_name, sync_players
+from fantasy_war_room.intelligence import (
+    import_rankings,
+    normalize_name,
+    reprocess_rankings,
+    sync_players,
+)
 from fantasy_war_room.rendering import (
     diagnostic,
     emit_json,
@@ -387,6 +392,43 @@ def rankings_import(
         operation,
         lambda result: stdout.print(
             f"{'Stored' if result['created'] else 'Unchanged'} ranking snapshot "
+            f"{result['snapshot'].ranking_snapshot_id}"
+        ),
+    )
+
+
+@rankings_app.command("reprocess")
+def rankings_reprocess(
+    snapshot_id: str = typer.Option(..., "--snapshot-id"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Resolve an immutable ranking snapshot again with the current resolver."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        repository = IntelligenceRepository(settings.db_path)
+        snapshot, created = reprocess_rankings(
+            repository,
+            snapshot_id,
+            parse_timestamp(observed_at) if observed_at else None,
+        )
+        return {
+            "created": created,
+            "snapshot": snapshot,
+            "match_method_counts": repository.ranking_match_method_counts(
+                snapshot.ranking_snapshot_id
+            ),
+            "issues": repository.ranking_issues(snapshot.ranking_snapshot_id),
+        }
+
+    _run(
+        "rankings reprocess",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} reprocessed ranking snapshot "
             f"{result['snapshot'].ranking_snapshot_id}"
         ),
     )

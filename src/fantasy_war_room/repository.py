@@ -9,7 +9,13 @@ from typing import Any
 import duckdb
 import polars as pl
 
-from fantasy_war_room.errors import DataIntegrityError
+from fantasy_war_room.errors import DataIntegrityError, NotFoundError
+from fantasy_war_room.identity import (
+    alias_targets,
+    normalize_name,
+    strict_name,
+    suffix_insensitive_name,
+)
 from fantasy_war_room.models import (
     BoardPlayer,
     PlayerDirectorySnapshot,
@@ -176,12 +182,22 @@ DROP TABLE player_observations;
 ALTER TABLE player_observations_v5 RENAME TO player_observations;
 """
 
+MIGRATION_6 = """
+ALTER TABLE ranking_snapshots ADD COLUMN resolver_version VARCHAR;
+ALTER TABLE ranking_snapshots ADD COLUMN reprocessed_from_snapshot_id VARCHAR;
+UPDATE ranking_snapshots SET resolver_version = '1.0' WHERE resolver_version IS NULL;
+ALTER TABLE ranking_entries ADD COLUMN match_method VARCHAR;
+UPDATE ranking_entries SET match_method = CASE
+ WHEN match_status = 'matched' THEN 'legacy' ELSE NULL END;
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
     (3, "m2_player_intelligence", MIGRATION_3),
     (4, "m2_observation_schema_alignment", MIGRATION_4),
     (5, "m2_player_source_observations", MIGRATION_5),
+    (6, "m2_ranking_resolution_provenance", MIGRATION_6),
 )
 
 
@@ -708,7 +724,7 @@ class IntelligenceRepository(SnapshotRepository):
 
     def resolve_player(
         self, row: dict[str, Any], at: datetime
-    ) -> tuple[str | None, str, str, list[str]]:
+    ) -> tuple[str | None, str, str, list[str], str | None]:
         with duckdb.connect(str(self.path)) as connection:
             snapshot = connection.execute(
                 "SELECT snapshot_id FROM player_directory_snapshots WHERE observed_at <= ? "
@@ -716,7 +732,7 @@ class IntelligenceRepository(SnapshotRepository):
                 [at],
             ).fetchone()
             if not snapshot:
-                return None, "unresolved", "no player directory exists as of observation", []
+                return None, "unresolved", "no player directory exists as of observation", [], None
             explicit = [
                 (provider, row.get(f"{provider}_id"))
                 for provider in ("sleeper", "gsis", "espn", "yahoo")
@@ -729,37 +745,84 @@ class IntelligenceRepository(SnapshotRepository):
                     [provider, provider_id, at],
                 ).fetchone()
                 if match:
-                    return str(match[0]), "matched", f"explicit {provider} ID", []
-            name = row["normalized_name"]
+                    return (
+                        str(match[0]),
+                        "matched",
+                        f"explicit {provider} ID",
+                        [],
+                        f"explicit_{provider}_id",
+                    )
+            source_name = str(row["player_name"])
             position, team = row.get("position"), row.get("team")
             if not position:
-                return None, "unresolved", "position is required for name matching", []
-            if team:
-                exact_team = connection.execute(
-                    "SELECT DISTINCT canonical_player_id FROM player_observations "
-                    "WHERE snapshot_id = ? "
-                    "AND normalized_full_name = ? AND upper(position) = upper(?) "
-                    "AND upper(team) = upper(?) ORDER BY canonical_player_id",
-                    [snapshot[0], name, position, team],
-                ).fetchall()
-                team_ids = [str(candidate[0]) for candidate in exact_team]
-                if len(team_ids) == 1:
-                    return team_ids[0], "matched", "exact name, position, and team", []
-                if len(team_ids) > 1:
-                    return None, "ambiguous", "multiple exact player matches", team_ids
+                return None, "unresolved", "position is required for name matching", [], None
             candidates = connection.execute(
-                "SELECT DISTINCT canonical_player_id FROM player_observations "
-                "WHERE snapshot_id = ? "
-                "AND normalized_full_name = ? AND upper(position) = upper(?) "
-                "ORDER BY canonical_player_id",
-                [snapshot[0], name, position],
+                "SELECT canonical_player_id, coalesce("
+                "nullif(trim(first_name || ' ' || last_name), ''), "
+                "json_extract_string(raw_payload, '$.full_name'), normalized_full_name), "
+                "position, team "
+                "FROM player_observations WHERE snapshot_id = ? ORDER BY canonical_player_id",
+                [snapshot[0]],
             ).fetchall()
-            ids = [str(candidate[0]) for candidate in candidates]
-            if len(ids) == 1:
-                return ids[0], "matched", "unique exact name and position", []
-            if len(ids) > 1:
-                return None, "ambiguous", "multiple exact player matches", ids
-            return None, "unresolved", "no exact player match", []
+
+            def matching_ids(form: str, target: str) -> list[str]:
+                forms = {
+                    "strict_identity": strict_name,
+                    "punctuation_normalized": normalize_name,
+                    "suffix_insensitive": suffix_insensitive_name,
+                    "verified_alias": normalize_name,
+                }
+                matches = {
+                    str(candidate[0])
+                    for candidate in candidates
+                    if str(candidate[2]).upper() == str(position).upper()
+                    and forms[form](str(candidate[1])) == target
+                }
+                if team:
+                    team_matches = {
+                        str(candidate[0])
+                        for candidate in candidates
+                        if str(candidate[2]).upper() == str(position).upper()
+                        and forms[form](str(candidate[1])) == target
+                        and candidate[3]
+                        and str(candidate[3]).upper() == str(team).upper()
+                    }
+                    if team_matches:
+                        matches = team_matches
+                return sorted(matches)
+
+            attempts = (
+                ("strict_identity", strict_name(source_name)),
+                ("punctuation_normalized", normalize_name(source_name)),
+                ("suffix_insensitive", suffix_insensitive_name(source_name)),
+            )
+            for method, target in attempts:
+                ids = matching_ids(method, target)
+                if len(ids) == 1:
+                    return ids[0], "matched", method.replace("_", " "), [], method
+                if len(ids) > 1:
+                    return None, "ambiguous", f"multiple {method} matches", ids, None
+            aliases = alias_targets(source_name, position)
+            if aliases:
+                ids = sorted(
+                    {
+                        canonical_id
+                        for alias in aliases
+                        for canonical_id in matching_ids("verified_alias", alias)
+                    }
+                )
+                if len(ids) == 1:
+                    return ids[0], "matched", "verified alias", [], "verified_alias"
+                if len(ids) > 1:
+                    return None, "ambiguous", "multiple verified alias matches", ids, None
+            name_matches = {
+                str(candidate[0])
+                for candidate in candidates
+                if normalize_name(str(candidate[1])) == normalize_name(source_name)
+            }
+            if name_matches:
+                return None, "unresolved", "position mismatch", sorted(name_matches), None
+            return None, "unresolved", "player absent from current directory", [], None
 
     def insert_ranking_snapshot(
         self,
@@ -774,20 +837,28 @@ class IntelligenceRepository(SnapshotRepository):
                 latest = connection.execute(
                     "SELECT payload_hash FROM ranking_snapshots WHERE source = ? AND season = ? "
                     "AND scoring_format = ? AND league_size = ? "
+                    "AND resolver_version = ? "
+                    "AND reprocessed_from_snapshot_id IS NOT DISTINCT FROM ? "
                     "ORDER BY observed_at DESC, ranking_snapshot_id DESC LIMIT 1",
                     [
                         snapshot.source,
                         snapshot.season,
                         snapshot.scoring_format,
                         snapshot.league_size,
+                        snapshot.resolver_version,
+                        snapshot.reprocessed_from_snapshot_id,
                     ],
                 ).fetchone()
                 if latest and str(latest[0]) == snapshot.payload_hash:
                     connection.rollback()
                     return False
                 connection.execute(
-                    "INSERT INTO ranking_snapshots VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO ranking_snapshots (ranking_snapshot_id, source, source_version, "
+                    "season, scoring_format, league_size, observed_at, imported_at, payload_hash, "
+                    "original_filename, total_row_count, matched_row_count, unresolved_row_count, "
+                    "ambiguous_row_count, schema_version, resolver_version, "
+                    "reprocessed_from_snapshot_id) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         snapshot.ranking_snapshot_id,
                         snapshot.source,
@@ -804,11 +875,19 @@ class IntelligenceRepository(SnapshotRepository):
                         snapshot.unresolved_row_count,
                         snapshot.ambiguous_row_count,
                         snapshot.schema_version,
+                        snapshot.resolver_version,
+                        snapshot.reprocessed_from_snapshot_id,
                     ],
                 )
                 for entry in entries:
                     connection.execute(
-                        "INSERT INTO ranking_entries VALUES " + "(" + ", ".join(["?"] * 13) + ")",
+                        "INSERT INTO ranking_entries (ranking_snapshot_id, source_row_number, "
+                        "canonical_player_id, source_player_name, source_position, source_team, "
+                        "overall_rank, positional_rank, adp, adp_sd, projected_points, "
+                        "match_status, raw_payload, match_method) VALUES "
+                        + "("
+                        + ", ".join(["?"] * 14)
+                        + ")",
                         [
                             snapshot.ranking_snapshot_id,
                             entry["source_row_number"],
@@ -823,6 +902,7 @@ class IntelligenceRepository(SnapshotRepository):
                             entry.get("projected_points"),
                             entry["match_status"],
                             json.dumps(entry["raw_payload"], sort_keys=True),
+                            entry.get("match_method"),
                         ],
                     )
                 for issue in issues:
@@ -853,6 +933,35 @@ class IntelligenceRepository(SnapshotRepository):
                 "SELECT * FROM ranking_snapshots ORDER BY observed_at DESC, ranking_snapshot_id"
             ).fetchall()
         return [RankingSnapshot.from_row(row) for row in rows]
+
+    def ranking_snapshot_for_reprocessing(
+        self, snapshot_id: str
+    ) -> tuple[RankingSnapshot, list[tuple[int, dict[str, Any]]]]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            snapshot_row = connection.execute(
+                "SELECT * FROM ranking_snapshots WHERE ranking_snapshot_id = ?", [snapshot_id]
+            ).fetchone()
+            if snapshot_row is None:
+                raise NotFoundError(f"Ranking snapshot {snapshot_id!r} was not found")
+            rows = connection.execute(
+                "SELECT source_row_number, raw_payload FROM ranking_entries "
+                "WHERE ranking_snapshot_id = ? ORDER BY source_row_number",
+                [snapshot_id],
+            ).fetchall()
+        return RankingSnapshot.from_row(snapshot_row), [
+            (int(row_number), json.loads(raw_payload)) for row_number, raw_payload in rows
+        ]
+
+    def ranking_match_method_counts(self, snapshot_id: str) -> dict[str, int]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT coalesce(match_method, match_status), count(*) FROM ranking_entries "
+                "WHERE ranking_snapshot_id = ? GROUP BY ALL ORDER BY 1",
+                [snapshot_id],
+            ).fetchall()
+        return {str(method): int(count) for method, count in rows}
 
     def ranking_issues(self, snapshot_id: str | None = None) -> list[RankingIssue]:
         self.initialize()

@@ -89,6 +89,8 @@ class RankingSnapshot(BaseModel):
     matched_row_count: int
     unresolved_row_count: int
     ambiguous_row_count: int
+    resolver_version: str = "2.0"
+    reprocessed_from_snapshot_id: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> RankingSnapshot:
@@ -108,6 +110,8 @@ class RankingSnapshot(BaseModel):
             unresolved_row_count=row[12],
             ambiguous_row_count=row[13],
             schema_version=row[14],
+            resolver_version=row[15],
+            reprocessed_from_snapshot_id=row[16],
         )
 
 

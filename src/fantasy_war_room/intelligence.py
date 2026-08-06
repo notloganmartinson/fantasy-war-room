@@ -6,7 +6,6 @@ import math
 import os
 import tempfile
 import time
-import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,19 +15,16 @@ from uuid import uuid4
 import polars as pl
 
 from fantasy_war_room.errors import InputError
+from fantasy_war_room.identity import normalize_name
 from fantasy_war_room.models import PlayerDirectorySnapshot, RankingIssue, RankingSnapshot
 from fantasy_war_room.repository import IntelligenceRepository
 from fantasy_war_room.services import canonical_hash
 from fantasy_war_room.sleeper import SleeperPlayerProvider
 
 CACHE_MAX_AGE = timedelta(hours=24)
+RANKING_RESOLVER_VERSION = "2.0"
 RANKING_FIELDS = ("overall_rank", "positional_rank", "adp", "adp_sd", "projected_points")
 NUMERIC_FIELDS = ("overall_rank", "adp", "adp_sd", "projected_points")
-
-
-def normalize_name(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    return " ".join("".join(char if char.isalnum() else " " for char in normalized).lower().split())
 
 
 def sync_players(
@@ -212,7 +208,9 @@ def import_rankings(
             "position": _optional_text(row.get("position")),
             "team": _optional_text(row.get("team")),
         }
-        canonical_id, status, reason, candidates = repository.resolve_player(resolution_row, at)
+        canonical_id, status, reason, candidates, match_method = repository.resolve_player(
+            resolution_row, at
+        )
         entry = {
             "source_row_number": row_number,
             "canonical_player_id": canonical_id,
@@ -225,6 +223,7 @@ def import_rankings(
             "adp_sd": row.get("adp_sd"),
             "projected_points": row.get("projected_points"),
             "match_status": status,
+            "match_method": match_method,
             "raw_payload": raw,
         }
         entries.append(entry)
@@ -267,6 +266,77 @@ def import_rankings(
         matched_row_count=sum(entry["match_status"] == "matched" for entry in entries),
         unresolved_row_count=sum(entry["match_status"] == "unresolved" for entry in entries),
         ambiguous_row_count=sum(entry["match_status"] == "ambiguous" for entry in entries),
+        resolver_version=RANKING_RESOLVER_VERSION,
+    )
+    return snapshot, repository.insert_ranking_snapshot(snapshot, entries, issues)
+
+
+def reprocess_rankings(
+    repository: IntelligenceRepository,
+    snapshot_id: str,
+    observed_at: datetime | None = None,
+) -> tuple[RankingSnapshot, bool]:
+    original, rows = repository.ranking_snapshot_for_reprocessing(snapshot_id)
+    at = observed_at or datetime.now(UTC)
+    entries: list[dict[str, Any]] = []
+    issues: list[RankingIssue] = []
+    new_snapshot_id = str(uuid4())
+    for source_row_number, raw in rows:
+        row = {key: _blank_to_none(value) for key, value in raw.items()}
+        player_name = str(row.get("player_name") or "").strip()
+        position = _optional_text(row.get("position"))
+        team = _optional_text(row.get("team"))
+        resolution_row = {
+            **row,
+            "player_name": player_name,
+            "normalized_name": normalize_name(player_name),
+            "position": position,
+            "team": team,
+        }
+        canonical_id, status, reason, candidates, match_method = repository.resolve_player(
+            resolution_row, at
+        )
+        entry = {
+            "source_row_number": source_row_number,
+            "canonical_player_id": canonical_id,
+            "player_name": player_name,
+            "position": position,
+            "team": team,
+            "overall_rank": _optional_number(row.get("overall_rank")),
+            "positional_rank": _optional_text(row.get("positional_rank")),
+            "adp": _optional_number(row.get("adp")),
+            "adp_sd": _optional_number(row.get("adp_sd")),
+            "projected_points": _optional_number(row.get("projected_points")),
+            "match_status": status,
+            "match_method": match_method,
+            "raw_payload": raw,
+        }
+        entries.append(entry)
+        if status != "matched":
+            issues.append(
+                RankingIssue(
+                    ranking_snapshot_id=new_snapshot_id,
+                    source_row_number=source_row_number,
+                    source_player_name=player_name,
+                    source_position=position,
+                    source_team=team,
+                    match_status=status,
+                    reason=reason,
+                    candidate_player_ids=candidates,
+                    raw_payload=raw,
+                )
+            )
+    snapshot = original.model_copy(
+        update={
+            "ranking_snapshot_id": new_snapshot_id,
+            "observed_at": at,
+            "imported_at": datetime.now(UTC),
+            "matched_row_count": sum(e["match_status"] == "matched" for e in entries),
+            "unresolved_row_count": sum(e["match_status"] == "unresolved" for e in entries),
+            "ambiguous_row_count": sum(e["match_status"] == "ambiguous" for e in entries),
+            "resolver_version": RANKING_RESOLVER_VERSION,
+            "reprocessed_from_snapshot_id": original.ranking_snapshot_id,
+        }
     )
     return snapshot, repository.insert_ranking_snapshot(snapshot, entries, issues)
 

@@ -8,7 +8,12 @@ import duckdb
 import pytest
 
 from fantasy_war_room.errors import DataIntegrityError, InputError
-from fantasy_war_room.intelligence import import_rankings, normalize_name, sync_players
+from fantasy_war_room.intelligence import (
+    import_rankings,
+    normalize_name,
+    reprocess_rankings,
+    sync_players,
+)
 from fantasy_war_room.repository import IntelligenceRepository, MigrationError
 from fantasy_war_room.services import sync
 
@@ -405,6 +410,89 @@ def test_ranking_resolution_issues_and_dedup(tmp_path: Path) -> None:
     assert len(issues[0].candidate_player_ids) == 2
 
 
+def test_real_ranking_name_variations_and_append_only_reprocessing(tmp_path: Path) -> None:
+    repository = IntelligenceRepository(tmp_path / "variations.duckdb")
+    punctuation = [
+        ("Ja’Marr Chase", "Ja'Marr Chase", "WR", "CIN"),
+        ("De’Von Achane", "De'Von Achane", "RB", "MIA"),
+        ("D’Andre Swift", "D'Andre Swift", "RB", "CHI"),
+        ("Wan’Dale Robinson", "Wan'Dale Robinson", "WR", "TEN"),
+        ("De’Zhaun Stribling", "De'Zhaun Stribling", "WR", "SF"),
+        ("Ja’Kobi Lane", "Ja'Kobi Lane", "WR", "BAL"),
+        ("D.J. Moore", "DJ Moore", "WR", "BUF"),
+        ("A.J. Barner", "AJ Barner", "TE", "SEA"),
+    ]
+    suffixes = [
+        ("Kenneth Walker III", "Kenneth Walker", "RB", "KC"),
+        ("Travis Etienne Jr.", "Travis Etienne", "RB", "NO"),
+        ("Luther Burden III", "Luther Burden", "WR", "CHI"),
+        ("Brian Thomas Jr.", "Brian Thomas", "WR", "JAX"),
+        ("Marvin Harrison Jr.", "Marvin Harrison", "WR", "ARI"),
+        ("Michael Pittman Jr.", "Michael Pittman", "WR", "PIT"),
+        ("Tyrone Tracy Jr.", "Tyrone Tracy", "RB", "NYG"),
+        ("Omar Cooper Jr.", "Omar Cooper", "WR", "NYJ"),
+        ("Oronde Gadsden II", "Oronde Gadsden", "TE", "LAC"),
+        ("Brian Robinson Jr.", "Brian Robinson", "RB", "ATL"),
+    ]
+    aliases = [
+        ("Kenneth Gainwell", "Kenny Gainwell", "RB", "TB"),
+        ("Nick Singleton", "Nicholas Singleton", "RB", "TEN"),
+    ]
+    cases = punctuation + suffixes + aliases
+    payload = {
+        f"p{index}": {
+            "full_name": sleeper_name,
+            "position": position,
+            "team": team,
+        }
+        for index, (_, sleeper_name, position, team) in enumerate(cases)
+    }
+    sync_players(
+        PlayerProvider(payload),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=datetime(2026, 7, 1, tzinfo=UTC),
+    )
+    csv_path = tmp_path / "variations.csv"
+    csv_path.write_text(
+        "player_name,position,team,overall_rank\n"
+        + "".join(
+            f"{source_name},{position},{team},{rank}\n"
+            for rank, (source_name, _, position, team) in enumerate(cases, 1)
+        ),
+        encoding="utf-8",
+    )
+    original, created = import_rankings(
+        csv_path,
+        repository,
+        "variation-fixture",
+        "2026",
+        "ppr",
+        10,
+        source_version="published-v1",
+        observed_at=datetime(2026, 7, 2, tzinfo=UTC),
+    )
+    assert created is True and original.matched_row_count == 20
+    assert repository.ranking_match_method_counts(original.ranking_snapshot_id) == {
+        "punctuation_normalized": 8,
+        "suffix_insensitive": 10,
+        "verified_alias": 2,
+    }
+    reprocessed, reprocessed_created = reprocess_rankings(
+        repository,
+        original.ranking_snapshot_id,
+        observed_at=datetime(2026, 7, 3, tzinfo=UTC),
+    )
+    assert reprocessed_created is True
+    assert reprocessed.source_version == original.source_version == "published-v1"
+    assert reprocessed.reprocessed_from_snapshot_id == original.ranking_snapshot_id
+    assert reprocessed.ranking_snapshot_id != original.ranking_snapshot_id
+    assert len(repository.ranking_snapshots()) == 2
+    assert repository.ranking_issues(original.ranking_snapshot_id) == []
+    assert normalize_name("  A.J.-Barner  ") == normalize_name("AJ Barner")
+
+
 def test_malformed_numeric_csv_is_rejected(tmp_path: Path) -> None:
     csv_path = tmp_path / "bad.csv"
     csv_path.write_text("player_name,overall_rank\nAlpha Quarterback,first\n", encoding="utf-8")
@@ -510,6 +598,7 @@ def test_m2_migration_preserves_m1_rows(tmp_path: Path) -> None:
             (3, "m2_player_intelligence"),
             (4, "m2_observation_schema_alignment"),
             (5, "m2_player_source_observations"),
+            (6, "m2_ranking_resolution_provenance"),
         ]
         assert connection.execute("SELECT count(*) FROM player_observations").fetchone() == (0,)
 
@@ -550,7 +639,7 @@ def test_migration_four_upgrades_exact_deployed_m2_schema_and_preserves_rows(
         assert row == ("cp1", observed_at)
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
 
 
 def test_fresh_and_upgraded_player_observation_schemas_are_equivalent(tmp_path: Path) -> None:
@@ -732,7 +821,7 @@ def test_migration_four_succeeds_after_inconsistent_fixture_is_corrected(tmp_pat
 
     IntelligenceRepository(path).initialize()
 
-    assert _migration_versions(path) == [1, 2, 3, 4, 5]
+    assert _migration_versions(path) == [1, 2, 3, 4, 5, 6]
     with duckdb.connect(str(path)) as connection:
         assert connection.execute(
             "SELECT observed_at FROM player_observations "
