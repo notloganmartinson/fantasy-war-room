@@ -20,6 +20,8 @@ from fantasy_war_room.models import (
     BoardPlayer,
     PlayerDirectorySnapshot,
     PlayerSearchResult,
+    ProjectionIssue,
+    ProjectionSnapshot,
     RankingIssue,
     RankingSnapshot,
     Snapshot,
@@ -191,6 +193,72 @@ UPDATE ranking_entries SET match_method = CASE
  WHEN match_status = 'matched' THEN 'legacy' ELSE NULL END;
 """
 
+MIGRATION_7 = """
+CREATE TABLE projection_snapshots (
+ projection_snapshot_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL,
+ source_version VARCHAR NOT NULL, season VARCHAR NOT NULL, horizon VARCHAR NOT NULL,
+ source_scoring_format VARCHAR NOT NULL, observed_at TIMESTAMPTZ NOT NULL,
+ imported_at TIMESTAMPTZ NOT NULL, payload_hash VARCHAR NOT NULL,
+ total_row_count INTEGER NOT NULL, matched_row_count INTEGER NOT NULL,
+ unresolved_row_count INTEGER NOT NULL, ambiguous_row_count INTEGER NOT NULL,
+ player_snapshot_id VARCHAR NOT NULL, league_snapshot_id VARCHAR NOT NULL,
+ scoring_settings_hash VARCHAR NOT NULL, scoring_settings JSON NOT NULL,
+ scoring_calculator_version VARCHAR NOT NULL, schema_version VARCHAR NOT NULL
+);
+CREATE TABLE projection_snapshot_sources (
+ projection_snapshot_id VARCHAR NOT NULL, position VARCHAR NOT NULL,
+ original_filename VARCHAR NOT NULL, source_page_hash VARCHAR NOT NULL,
+ row_count INTEGER NOT NULL, published_columns JSON NOT NULL,
+ PRIMARY KEY(projection_snapshot_id, position)
+);
+CREATE TABLE projection_entries (
+ projection_snapshot_id VARCHAR NOT NULL, source_position VARCHAR NOT NULL,
+ source_row_number INTEGER NOT NULL, canonical_player_id VARCHAR,
+ source_player_name VARCHAR NOT NULL, position VARCHAR NOT NULL, team VARCHAR,
+ games DOUBLE, passing_attempts DOUBLE, passing_completions DOUBLE,
+ passing_yards DOUBLE, passing_yards_per_game DOUBLE, passing_touchdowns DOUBLE,
+ interceptions DOUBLE, passer_rating DOUBLE, rushing_attempts DOUBLE,
+ rushing_yards DOUBLE, rushing_yards_per_attempt DOUBLE, rushing_touchdowns DOUBLE,
+ targets DOUBLE, receptions DOUBLE, receiving_yards DOUBLE,
+ receiving_yards_per_game DOUBLE, receiving_yards_per_reception DOUBLE,
+ receiving_touchdowns DOUBLE, fumbles_lost DOUBLE,
+ cbs_projected_points DOUBLE, cbs_projected_points_per_game DOUBLE,
+ league_known_component_points DOUBLE, league_projected_points DOUBLE,
+ scoring_completeness VARCHAR NOT NULL, unprojected_scoring_keys JSON NOT NULL,
+ match_status VARCHAR NOT NULL, match_method VARCHAR, raw_payload JSON NOT NULL,
+ schema_version VARCHAR NOT NULL,
+ PRIMARY KEY(projection_snapshot_id, source_position, source_row_number)
+);
+CREATE TABLE projection_kicker_stats (
+ projection_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ field_goals_made DOUBLE, field_goals_attempted DOUBLE, longest_field_goal DOUBLE,
+ field_goals_made_1_19 DOUBLE, field_goals_attempted_1_19 DOUBLE,
+ field_goals_made_20_29 DOUBLE, field_goals_attempted_20_29 DOUBLE,
+ field_goals_made_30_39 DOUBLE, field_goals_attempted_30_39 DOUBLE,
+ field_goals_made_40_49 DOUBLE, field_goals_attempted_40_49 DOUBLE,
+ field_goals_made_50_plus DOUBLE, field_goals_attempted_50_plus DOUBLE,
+ extra_points_made DOUBLE, extra_points_attempted DOUBLE,
+ PRIMARY KEY(projection_snapshot_id, source_row_number)
+);
+CREATE TABLE projection_dst_stats (
+ projection_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ defensive_interceptions DOUBLE, safeties DOUBLE, sacks DOUBLE, tackles DOUBLE,
+ defensive_fumbles_recovered DOUBLE, forced_fumbles DOUBLE,
+ defensive_touchdowns DOUBLE, points_allowed DOUBLE, points_allowed_per_game DOUBLE,
+ passing_yards_allowed DOUBLE, rushing_yards_allowed DOUBLE,
+ total_yards_allowed DOUBLE, yards_allowed_per_game DOUBLE,
+ PRIMARY KEY(projection_snapshot_id, source_row_number)
+);
+CREATE TABLE projection_match_issues (
+ projection_snapshot_id VARCHAR NOT NULL, source_position VARCHAR NOT NULL,
+ source_row_number INTEGER NOT NULL, source_player_name VARCHAR NOT NULL,
+ source_team VARCHAR, match_status VARCHAR NOT NULL, reason VARCHAR NOT NULL,
+ candidate_player_ids JSON NOT NULL, raw_payload JSON NOT NULL,
+ schema_version VARCHAR NOT NULL,
+ PRIMARY KEY(projection_snapshot_id, source_position, source_row_number)
+);
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
@@ -198,6 +266,7 @@ MIGRATIONS = (
     (4, "m2_observation_schema_alignment", MIGRATION_4),
     (5, "m2_player_source_observations", MIGRATION_5),
     (6, "m2_ranking_resolution_provenance", MIGRATION_6),
+    (7, "projection_intelligence", MIGRATION_7),
 )
 
 
@@ -976,6 +1045,212 @@ class IntelligenceRepository(SnapshotRepository):
             ).fetchall()
         return [RankingIssue.from_row(row) for row in rows]
 
+    def projection_context(self, at: datetime, league_id: str) -> tuple[str, str, dict[str, float]]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            player = connection.execute(
+                "SELECT snapshot_id FROM player_directory_snapshots WHERE observed_at <= ? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [at],
+            ).fetchone()
+            league = connection.execute(
+                "SELECT snapshot_id, league_payload FROM draft_snapshots "
+                "WHERE league_id = ? AND observed_at <= ? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [league_id, at],
+            ).fetchone()
+        if player is None:
+            raise NotFoundError("No player directory exists as of the projection observation")
+        if league is None:
+            raise NotFoundError(
+                "No Sleeper league snapshot exists as of the projection observation"
+            )
+        league_payload = json.loads(league[1])
+        scoring = league_payload.get("scoring_settings")
+        if not isinstance(scoring, dict):
+            raise NotFoundError("Selected Sleeper league snapshot has no scoring settings")
+        return (
+            str(player[0]),
+            str(league[0]),
+            {str(key): float(value) for key, value in scoring.items()},
+        )
+
+    def insert_projection_snapshot(
+        self,
+        snapshot: ProjectionSnapshot,
+        sources: list[dict[str, Any]],
+        entries: list[dict[str, Any]],
+        kicker_rows: list[dict[str, Any]],
+        dst_rows: list[dict[str, Any]],
+        issues: list[ProjectionIssue],
+    ) -> tuple[ProjectionSnapshot, bool]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            connection.begin()
+            try:
+                latest = connection.execute(
+                    "SELECT * FROM projection_snapshots WHERE source = ? "
+                    "AND source_version = ? AND season = ? AND horizon = ? "
+                    "AND source_scoring_format = ? AND scoring_settings_hash = ? "
+                    "AND player_snapshot_id = ? AND scoring_calculator_version = ? "
+                    "AND observed_at <= ? "
+                    "ORDER BY observed_at DESC, imported_at DESC, "
+                    "projection_snapshot_id DESC LIMIT 1",
+                    [
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                        snapshot.horizon,
+                        snapshot.source_scoring_format,
+                        snapshot.scoring_settings_hash,
+                        snapshot.player_snapshot_id,
+                        snapshot.scoring_calculator_version,
+                        snapshot.observed_at,
+                    ],
+                ).fetchone()
+                if latest and str(latest[8]) == snapshot.payload_hash:
+                    persisted = ProjectionSnapshot.from_row(latest)
+                    connection.rollback()
+                    return persisted, False
+                connection.execute(
+                    "INSERT INTO projection_snapshots (projection_snapshot_id, source, "
+                    "source_version, season, horizon, source_scoring_format, observed_at, "
+                    "imported_at, payload_hash, total_row_count, matched_row_count, "
+                    "unresolved_row_count, ambiguous_row_count, player_snapshot_id, "
+                    "league_snapshot_id, scoring_settings_hash, scoring_settings, "
+                    "scoring_calculator_version, schema_version) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        snapshot.projection_snapshot_id,
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                        snapshot.horizon,
+                        snapshot.source_scoring_format,
+                        snapshot.observed_at,
+                        snapshot.imported_at,
+                        snapshot.payload_hash,
+                        snapshot.total_row_count,
+                        snapshot.matched_row_count,
+                        snapshot.unresolved_row_count,
+                        snapshot.ambiguous_row_count,
+                        snapshot.player_snapshot_id,
+                        snapshot.league_snapshot_id,
+                        snapshot.scoring_settings_hash,
+                        json.dumps(snapshot.scoring_settings, sort_keys=True),
+                        snapshot.scoring_calculator_version,
+                        snapshot.schema_version,
+                    ],
+                )
+                connection.executemany(
+                    "INSERT INTO projection_snapshot_sources (projection_snapshot_id, position, "
+                    "original_filename, source_page_hash, row_count, published_columns) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        [
+                            snapshot.projection_snapshot_id,
+                            row["position"],
+                            row["original_filename"],
+                            row["source_page_hash"],
+                            row["row_count"],
+                            json.dumps(row["published_columns"]),
+                        ]
+                        for row in sources
+                    ],
+                )
+                _insert_projection_entries(connection, snapshot.projection_snapshot_id, entries)
+                _insert_kicker_projection_rows(
+                    connection, snapshot.projection_snapshot_id, kicker_rows
+                )
+                _insert_dst_projection_rows(connection, snapshot.projection_snapshot_id, dst_rows)
+                connection.executemany(
+                    "INSERT INTO projection_match_issues (projection_snapshot_id, "
+                    "source_position, source_row_number, source_player_name, source_team, "
+                    "match_status, reason, candidate_player_ids, raw_payload, schema_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        [
+                            snapshot.projection_snapshot_id,
+                            issue.source_position,
+                            issue.source_row_number,
+                            issue.source_player_name,
+                            issue.source_team,
+                            issue.match_status,
+                            issue.reason,
+                            json.dumps(issue.candidate_player_ids),
+                            json.dumps(issue.raw_payload, sort_keys=True),
+                            issue.schema_version,
+                        ]
+                        for issue in issues
+                    ],
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return snapshot, True
+
+    def projection_snapshots(self) -> list[ProjectionSnapshot]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM projection_snapshots "
+                "ORDER BY observed_at DESC, projection_snapshot_id"
+            ).fetchall()
+        return [ProjectionSnapshot.from_row(row) for row in rows]
+
+    def projection_at(self, at: datetime, source: str | None = None) -> ProjectionSnapshot | None:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            row = connection.execute(
+                "SELECT * FROM projection_snapshots WHERE observed_at <= ? "
+                "AND (? IS NULL OR source = ?) "
+                "ORDER BY observed_at DESC, imported_at DESC, "
+                "projection_snapshot_id DESC LIMIT 1",
+                [at, source, source],
+            ).fetchone()
+        return ProjectionSnapshot.from_row(row) if row else None
+
+    def projection_issues(self, snapshot_id: str | None = None) -> list[ProjectionIssue]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT projection_snapshot_id, source_position, source_row_number, "
+                "source_player_name, source_team, match_status, reason, candidate_player_ids, "
+                "raw_payload, schema_version FROM projection_match_issues "
+                "WHERE (? IS NULL OR projection_snapshot_id = ?) "
+                "ORDER BY projection_snapshot_id, source_position, source_row_number",
+                [snapshot_id, snapshot_id],
+            ).fetchall()
+        return [ProjectionIssue.from_row(row) for row in rows]
+
+    def projection_summary_by_position(self, snapshot_id: str) -> list[dict[str, Any]]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT source_position, count(*), "
+                "count(*) FILTER (WHERE match_status = 'matched'), "
+                "count(*) FILTER (WHERE match_status = 'unresolved'), "
+                "count(*) FILTER (WHERE match_status = 'ambiguous'), "
+                "count(*) FILTER (WHERE scoring_completeness = 'complete'), "
+                "count(*) FILTER (WHERE scoring_completeness = 'partial') "
+                "FROM projection_entries WHERE projection_snapshot_id = ? "
+                "GROUP BY source_position ORDER BY source_position",
+                [snapshot_id],
+            ).fetchall()
+        return [
+            {
+                "position": row[0],
+                "row_count": row[1],
+                "matched_count": row[2],
+                "unresolved_count": row[3],
+                "ambiguous_count": row[4],
+                "exact_scoring_count": row[5],
+                "partial_scoring_count": row[6],
+            }
+            for row in rows
+        ]
+
     def board(
         self,
         at: datetime,
@@ -1005,6 +1280,123 @@ class IntelligenceRepository(SnapshotRepository):
                 ],
             ).fetchall()
         return [BoardPlayer.from_row(row) for row in rows]
+
+
+_PROJECTION_ENTRY_FIELDS = (
+    "source_position",
+    "source_row_number",
+    "canonical_player_id",
+    "source_player_name",
+    "position",
+    "team",
+    "games",
+    "passing_attempts",
+    "passing_completions",
+    "passing_yards",
+    "passing_yards_per_game",
+    "passing_touchdowns",
+    "interceptions",
+    "passer_rating",
+    "rushing_attempts",
+    "rushing_yards",
+    "rushing_yards_per_attempt",
+    "rushing_touchdowns",
+    "targets",
+    "receptions",
+    "receiving_yards",
+    "receiving_yards_per_game",
+    "receiving_yards_per_reception",
+    "receiving_touchdowns",
+    "fumbles_lost",
+    "cbs_projected_points",
+    "cbs_projected_points_per_game",
+    "league_known_component_points",
+    "league_projected_points",
+    "scoring_completeness",
+    "unprojected_scoring_keys",
+    "match_status",
+    "match_method",
+    "raw_payload",
+    "schema_version",
+)
+
+
+def _insert_projection_entries(
+    connection: duckdb.DuckDBPyConnection, snapshot_id: str, rows: list[dict[str, Any]]
+) -> None:
+    if not rows:
+        return
+    columns = "projection_snapshot_id, " + ", ".join(_PROJECTION_ENTRY_FIELDS)
+    placeholders = ", ".join(["?"] * (len(_PROJECTION_ENTRY_FIELDS) + 1))
+    connection.executemany(
+        f"INSERT INTO projection_entries ({columns}) VALUES ({placeholders})",
+        [
+            [
+                snapshot_id,
+                *[
+                    json.dumps(row[field], sort_keys=True)
+                    if field in {"unprojected_scoring_keys", "raw_payload"}
+                    else row.get(field)
+                    for field in _PROJECTION_ENTRY_FIELDS
+                ],
+            ]
+            for row in rows
+        ],
+    )
+
+
+def _insert_kicker_projection_rows(
+    connection: duckdb.DuckDBPyConnection, snapshot_id: str, rows: list[dict[str, Any]]
+) -> None:
+    fields = (
+        "source_row_number",
+        "field_goals_made",
+        "field_goals_attempted",
+        "longest_field_goal",
+        "field_goals_made_1_19",
+        "field_goals_attempted_1_19",
+        "field_goals_made_20_29",
+        "field_goals_attempted_20_29",
+        "field_goals_made_30_39",
+        "field_goals_attempted_30_39",
+        "field_goals_made_40_49",
+        "field_goals_attempted_40_49",
+        "field_goals_made_50_plus",
+        "field_goals_attempted_50_plus",
+        "extra_points_made",
+        "extra_points_attempted",
+    )
+    if rows:
+        connection.executemany(
+            "INSERT INTO projection_kicker_stats VALUES (" + ", ".join(["?"] * 17) + ")",
+            [[snapshot_id, *[row.get(field) for field in fields]] for row in rows],
+        )
+
+
+def _insert_dst_projection_rows(
+    connection: duckdb.DuckDBPyConnection, snapshot_id: str, rows: list[dict[str, Any]]
+) -> None:
+    fields = (
+        "source_row_number",
+        "defensive_interceptions",
+        "safeties",
+        "sacks",
+        "tackles",
+        "defensive_fumbles_recovered",
+        "forced_fumbles",
+        "defensive_touchdowns",
+        "points_allowed",
+        "points_allowed_per_game",
+        "passing_yards_allowed",
+        "rushing_yards_allowed",
+        "total_yards_allowed",
+        "yards_allowed_per_game",
+    )
+    if rows:
+        connection.executemany(
+            "INSERT INTO projection_dst_stats VALUES (" + ", ".join(["?"] * 15) + ")",
+            [[snapshot_id, *[row.get(field) for field in fields]] for row in rows],
+        )
 
 
 _BOARD_SQL = """

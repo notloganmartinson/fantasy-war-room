@@ -23,12 +23,15 @@ from fantasy_war_room.intelligence import (
     reprocess_rankings,
     sync_players,
 )
+from fantasy_war_room.projections import import_cbs_projections
 from fantasy_war_room.rendering import (
     diagnostic,
     emit_json,
     render_board,
     render_leagues,
     render_players,
+    render_projection_issues,
+    render_projections,
     render_ranking_issues,
     render_rankings,
     stdout,
@@ -45,8 +48,10 @@ app = typer.Typer(
 )
 players_app = typer.Typer(help="Synchronize and search the local player directory.")
 rankings_app = typer.Typer(help="Import and inspect ranking snapshots.")
+projections_app = typer.Typer(help="Import and inspect statistical projection snapshots.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
+app.add_typer(projections_app, name="projections")
 
 
 def _run[T](
@@ -473,6 +478,94 @@ def rankings_unresolved(
         json_output,
         operation,
         lambda result: render_ranking_issues(result["issues"]),
+    )
+
+
+@projections_app.command("import-cbs")
+def projections_import_cbs(
+    directory: Path = typer.Argument(...),
+    source_version: str = typer.Option(..., "--source-version"),
+    season: str = typer.Option("2026", "--season"),
+    league_id: str | None = typer.Option(None, "--league-id"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Import six locally saved CBS full-season projection pages atomically."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(sleeper_league_id=league_id, db_path=db_path)
+        if not settings.sleeper_league_id:
+            raise ConfigurationError(
+                "missing_league_id", "A Sleeper league ID is required for projection scoring"
+            )
+        repository = IntelligenceRepository(settings.db_path)
+        snapshot, created, positions = import_cbs_projections(
+            directory,
+            repository,
+            source_version,
+            settings.sleeper_league_id,
+            parse_timestamp(observed_at) if observed_at else None,
+            season,
+        )
+        return {"created": created, "snapshot": snapshot, "positions": positions}
+
+    _run(
+        "projections import-cbs",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} CBS projection snapshot "
+            f"{result['snapshot'].projection_snapshot_id}"
+        ),
+    )
+
+
+@projections_app.command("list")
+def projections_list(
+    as_of: str | None = typer.Option(None, "--as-of"),
+    source: str | None = typer.Option(None, "--source"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List immutable statistical projection snapshots."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        repository = IntelligenceRepository(settings.db_path)
+        if as_of:
+            selected = repository.projection_at(parse_timestamp(as_of), source)
+            return {"snapshots": [selected] if selected else [], "as_of": parse_timestamp(as_of)}
+        return {"snapshots": repository.projection_snapshots(), "as_of": None}
+
+    _run(
+        "projections list",
+        json_output,
+        operation,
+        lambda result: render_projections(result["snapshots"]),
+    )
+
+
+@projections_app.command("issues")
+def projections_issues(
+    snapshot_id: str | None = typer.Option(None, "--snapshot-id"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List unresolved and ambiguous statistical projection identities."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        return {
+            "snapshot_id": snapshot_id,
+            "issues": IntelligenceRepository(settings.db_path).projection_issues(snapshot_id),
+        }
+
+    _run(
+        "projections issues",
+        json_output,
+        operation,
+        lambda result: render_projection_issues(result["issues"]),
     )
 
 

@@ -599,6 +599,7 @@ def test_m2_migration_preserves_m1_rows(tmp_path: Path) -> None:
             (4, "m2_observation_schema_alignment"),
             (5, "m2_player_source_observations"),
             (6, "m2_ranking_resolution_provenance"),
+            (7, "projection_intelligence"),
         ]
         assert connection.execute("SELECT count(*) FROM player_observations").fetchone() == (0,)
 
@@ -639,7 +640,7 @@ def test_migration_four_upgrades_exact_deployed_m2_schema_and_preserves_rows(
         assert row == ("cp1", observed_at)
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,)]
 
 
 def test_fresh_and_upgraded_player_observation_schemas_are_equivalent(tmp_path: Path) -> None:
@@ -821,7 +822,7 @@ def test_migration_four_succeeds_after_inconsistent_fixture_is_corrected(tmp_pat
 
     IntelligenceRepository(path).initialize()
 
-    assert _migration_versions(path) == [1, 2, 3, 4, 5, 6]
+    assert _migration_versions(path) == [1, 2, 3, 4, 5, 6, 7]
     with duckdb.connect(str(path)) as connection:
         assert connection.execute(
             "SELECT observed_at FROM player_observations "

@@ -144,6 +144,84 @@ class RankingIssue(BaseModel):
         )
 
 
+class ProjectionSnapshot(BaseModel):
+    schema_version: str = "1.0"
+    projection_snapshot_id: str
+    source: str
+    source_version: str
+    season: str
+    horizon: str
+    source_scoring_format: str
+    observed_at: datetime
+    imported_at: datetime
+    payload_hash: str
+    total_row_count: int
+    matched_row_count: int
+    unresolved_row_count: int
+    ambiguous_row_count: int
+    player_snapshot_id: str
+    league_snapshot_id: str
+    scoring_settings_hash: str
+    scoring_settings: dict[str, float]
+    scoring_calculator_version: str
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> ProjectionSnapshot:
+        import json
+
+        return cls(
+            projection_snapshot_id=row[0],
+            source=row[1],
+            source_version=row[2],
+            season=row[3],
+            horizon=row[4],
+            source_scoring_format=row[5],
+            observed_at=row[6],
+            imported_at=row[7],
+            payload_hash=row[8],
+            total_row_count=row[9],
+            matched_row_count=row[10],
+            unresolved_row_count=row[11],
+            ambiguous_row_count=row[12],
+            player_snapshot_id=row[13],
+            league_snapshot_id=row[14],
+            scoring_settings_hash=row[15],
+            scoring_settings=json.loads(row[16]),
+            scoring_calculator_version=row[17],
+            schema_version=row[18],
+        )
+
+
+class ProjectionIssue(BaseModel):
+    schema_version: str = "1.0"
+    projection_snapshot_id: str
+    source_position: str
+    source_row_number: int
+    source_player_name: str
+    source_team: str | None
+    match_status: str
+    reason: str
+    candidate_player_ids: list[str]
+    raw_payload: dict[str, Any]
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> ProjectionIssue:
+        import json
+
+        return cls(
+            projection_snapshot_id=row[0],
+            source_position=row[1],
+            source_row_number=row[2],
+            source_player_name=row[3],
+            source_team=row[4],
+            match_status=row[5],
+            reason=row[6],
+            candidate_player_ids=json.loads(row[7]),
+            raw_payload=json.loads(row[8]),
+            schema_version=row[9],
+        )
+
+
 class BoardPlayer(BaseModel):
     schema_version: str = "1.0"
     canonical_player_id: str

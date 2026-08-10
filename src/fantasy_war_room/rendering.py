@@ -96,6 +96,39 @@ def render_ranking_issues(issues: list[Any]) -> None:
     stdout.print(table)
 
 
+def render_projections(snapshots: list[Any]) -> None:
+    table = Table(title="Projection imports")
+    for heading in ("Source", "Version", "Season", "Observed", "Rows", "Matched", "Issues"):
+        table.add_column(heading)
+    for snapshot in snapshots:
+        table.add_row(
+            snapshot.source,
+            snapshot.source_version,
+            snapshot.season,
+            snapshot.observed_at.isoformat(),
+            str(snapshot.total_row_count),
+            str(snapshot.matched_row_count),
+            str(snapshot.unresolved_row_count + snapshot.ambiguous_row_count),
+        )
+    stdout.print(table)
+
+
+def render_projection_issues(issues: list[Any]) -> None:
+    table = Table(title="Unresolved projection rows")
+    for heading in ("Snapshot", "Position", "Row", "Player", "Status", "Reason"):
+        table.add_column(heading)
+    for issue in issues:
+        table.add_row(
+            issue.projection_snapshot_id,
+            issue.source_position,
+            str(issue.source_row_number),
+            issue.source_player_name,
+            issue.match_status,
+            issue.reason,
+        )
+    stdout.print(table)
+
+
 def render_board(players: list[Any]) -> None:
     table = Table(title="Available player board")
     for heading in ("Rank", "Player", "Pos", "Team", "ADP", "Source"):
