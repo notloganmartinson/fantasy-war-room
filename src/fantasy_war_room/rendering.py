@@ -163,6 +163,61 @@ def render_board(players: list[Any]) -> None:
     stdout.print(table)
 
 
+def render_recommendation(result: Any) -> None:
+    context = result.turn_context
+    status = "ON THE CLOCK" if context.on_the_clock else "waiting"
+    stdout.print(
+        f"[bold]Round {context.current_round}, pick {context.next_overall_pick}[/bold] "
+        f"({status}); your next pick: {context.user_next_scheduled_pick}"
+    )
+    lineup = Table(title="Current offensive lineup")
+    for heading in ("Slot", "Player", "Pos", "Projection", "Kind"):
+        lineup.add_column(heading)
+    for assignment in result.current_roster.starters:
+        lineup.add_row(
+            assignment.slot,
+            assignment.player_name,
+            assignment.position,
+            f"{assignment.projection:.1f}",
+            assignment.projection_value_kind,
+        )
+    if not result.current_roster.starters:
+        lineup.add_row("-", "No offensive starters drafted", "-", "0.0", "-")
+    stdout.print(lineup)
+
+    table = Table(title="Draft recommendations")
+    for heading in (
+        "#",
+        "Player",
+        "Pos",
+        "Score",
+        "Projection",
+        "VORP",
+        "Rank",
+        "Scarcity",
+        "Δ / roster effect",
+    ):
+        table.add_column(heading)
+    for candidate in result.candidates:
+        table.add_row(
+            str(candidate.recommendation_rank),
+            candidate.player_name,
+            candidate.position,
+            f"{candidate.recommendation_score:.2f}",
+            f"{candidate.projection_baseline:.1f} "
+            f"({'exact' if candidate.projection_value_kind == 'exact' else 'known'})",
+            f"{candidate.vorp:.1f}",
+            _display_number(candidate.expert_overall_rank),
+            _display_number(candidate.scarcity.scarcity_points),
+            f"{candidate.roster_effect.starter_projection_delta:.1f} / "
+            f"{candidate.roster_effect.category}",
+        )
+    stdout.print(table)
+    stdout.print("Next-pick probability: unavailable (uncalibrated)")
+    for limitation in result.limitations:
+        stdout.print(f"[yellow]Limitation:[/yellow] {limitation}")
+
+
 def _display_number(value: float | None) -> str:
     return "-" if value is None else f"{value:g}"
 

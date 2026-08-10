@@ -49,5 +49,11 @@ class ProviderError(FwrError):
 
 
 class NotFoundError(FwrError):
-    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
-        super().__init__("not_found", message, ExitCode.NOT_FOUND, details)
+    def __init__(
+        self,
+        message: str,
+        details: dict[str, Any] | None = None,
+        *,
+        code: str = "not_found",
+    ) -> None:
+        super().__init__(code, message, ExitCode.NOT_FOUND, details)

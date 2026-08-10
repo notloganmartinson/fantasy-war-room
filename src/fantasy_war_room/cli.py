@@ -30,6 +30,7 @@ from fantasy_war_room.intelligence import (
     sync_players,
 )
 from fantasy_war_room.projections import import_cbs_projections
+from fantasy_war_room.recommendations import build_recommendation
 from fantasy_war_room.rendering import (
     diagnostic,
     emit_json,
@@ -41,6 +42,7 @@ from fantasy_war_room.rendering import (
     render_projections,
     render_ranking_issues,
     render_rankings,
+    render_recommendation,
     stdout,
 )
 from fantasy_war_room.repository import IntelligenceRepository, SnapshotRepository
@@ -677,3 +679,32 @@ def board(
         return {"as_of": at, "players": results}
 
     _run("board", json_output, operation, lambda result: render_board(result["players"]))
+
+
+@app.command("recommend")
+def recommend_command(
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
+    source: str | None = typer.Option(None, "--source"),
+    limit: int = typer.Option(10, "--limit", min=1),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Recommend who to draft using only immutable local snapshots."""
+
+    def operation() -> Any:
+        settings = load_settings(db_path=db_path)
+        at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
+        return build_recommendation(
+            IntelligenceRepository(settings.db_path),
+            at,
+            draft_id=draft_id,
+            league_id=None if draft_id else settings.sleeper_league_id,
+            sleeper_user_id=settings.sleeper_user_id,
+            draft_slot=draft_slot,
+            ranking_source=source,
+            limit=limit,
+        )
+
+    _run("recommend", json_output, operation, render_recommendation)

@@ -53,7 +53,9 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
         players[player_id] for player_id in sorted(user_ids & players.keys())
     )
     current_roster = allocate_roster(inputs, modeled_user_roster)
-    missing_user_ids = tuple(sorted(user_ids - players.keys()))
+    missing_user_ids = tuple(
+        sorted((*user_ids.difference(players), *inputs.unresolved_roster_player_ids))
+    )
     if missing_user_ids:
         current_roster = current_roster.model_copy(
             update={

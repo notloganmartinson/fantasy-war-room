@@ -26,7 +26,7 @@ class RosterConfiguration(DecisionModel):
 class CompletedDraftPick(DecisionModel):
     schema_version: str = "1.0"
     pick_no: int = Field(gt=0)
-    draft_slot: int = Field(gt=0)
+    draft_slot: int | None = Field(default=None, gt=0)
     canonical_player_id: str | None = None
     sleeper_player_id: str | None = None
 
@@ -65,6 +65,16 @@ class RecommendationProvenance(DecisionModel):
     ranking_resolver_version: str
     scoring_calculator_version: str
     scoring_settings_hash: str
+    draft_observed_at: datetime | None = None
+    player_observed_at: datetime | None = None
+    player_fetched_at: datetime | None = None
+    ranking_observed_at: datetime | None = None
+    ranking_imported_at: datetime | None = None
+    projection_observed_at: datetime | None = None
+    projection_imported_at: datetime | None = None
+    projection_player_snapshot_id: str | None = None
+    projection_league_snapshot_id: str | None = None
+    scoring_context_league_id: str | None = None
 
 
 class RecommendationInputs(DecisionModel):
@@ -79,6 +89,7 @@ class RecommendationInputs(DecisionModel):
     projected_players: tuple[RecommendationPlayerInput, ...]
     expert_rankings: tuple[ExpertRankingInput, ...]
     provenance: RecommendationProvenance
+    unresolved_roster_player_ids: tuple[str, ...] = ()
 
 
 class DraftTurnContext(DecisionModel):

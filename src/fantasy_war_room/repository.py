@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import duckdb
 import polars as pl
 
-from fantasy_war_room.errors import DataIntegrityError, NotFoundError
+from fantasy_war_room.decision.models import (
+    CompletedDraftPick,
+    ExpertRankingInput,
+    OffensivePosition,
+    RecommendationInputs,
+    RecommendationPlayerInput,
+    RecommendationProvenance,
+    RosterConfiguration,
+)
+from fantasy_war_room.errors import (
+    ConfigurationError,
+    DataIntegrityError,
+    InputError,
+    NotFoundError,
+)
 from fantasy_war_room.identity import (
     alias_targets,
     normalize_name,
@@ -1291,6 +1306,171 @@ class IntelligenceRepository(SnapshotRepository):
             for row in rows
         ]
 
+    def recommendation_inputs(
+        self,
+        at: datetime,
+        *,
+        draft_id: str | None,
+        league_id: str | None,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+        ranking_source: str | None,
+        projection_source: str = "cbs",
+    ) -> RecommendationInputs:
+        """Build one temporally consistent, provider-free recommendation input."""
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            draft_row = _select_recommendation_draft(connection, at, draft_id, league_id)
+            draft_snapshot = _snapshot_from_row(draft_row)
+            scoring_context = draft_snapshot.scoring_context
+            if scoring_context is None or draft_snapshot.scoring_context_league_id is None:
+                raise ConfigurationError(
+                    "mock_scoring_context_required",
+                    "Standalone draft has no explicit league scoring context",
+                    {"draft_id": draft_snapshot.draft_id},
+                )
+            scoring = scoring_context.get("scoring_settings")
+            if not isinstance(scoring, dict):
+                raise InputError(
+                    "incompatible_scoring_context",
+                    "Selected draft scoring context has no scoring settings",
+                    {"draft_id": draft_snapshot.draft_id},
+                )
+            try:
+                normalized_scoring = {str(key): float(value) for key, value in scoring.items()}
+            except (TypeError, ValueError) as exc:
+                raise InputError(
+                    "incompatible_scoring_context",
+                    "Selected draft scoring settings contain a nonnumeric value",
+                    {"draft_id": draft_snapshot.draft_id},
+                ) from exc
+            scoring_hash = _canonical_hash(normalized_scoring)
+            season = str(draft_snapshot.draft.get("season") or "")
+            if not season:
+                raise InputError(
+                    "incompatible_scoring_context",
+                    "Selected draft has no season",
+                    {"draft_id": draft_snapshot.draft_id},
+                )
+            player_row = connection.execute(
+                "SELECT snapshot_id, observed_at, fetched_at FROM player_directory_snapshots "
+                "WHERE provider = 'sleeper' AND sport = 'nfl' AND observed_at <= ? "
+                "AND fetched_at <= ? ORDER BY observed_at DESC, fetched_at DESC, "
+                "snapshot_id DESC LIMIT 1",
+                [at, at],
+            ).fetchone()
+            if player_row is None:
+                raise NotFoundError(
+                    "No eligible player-directory snapshot exists as of the decision time",
+                    {"as_of": at.isoformat()},
+                    code="missing_player_snapshot",
+                )
+            ranking_row = connection.execute(
+                "SELECT * FROM ranking_snapshots WHERE observed_at <= ? AND imported_at <= ? "
+                "AND season = ? AND (? IS NULL OR source = ?) "
+                "ORDER BY observed_at DESC, imported_at DESC, ranking_snapshot_id DESC LIMIT 1",
+                [at, at, season, ranking_source, ranking_source],
+            ).fetchone()
+            if ranking_row is None:
+                raise NotFoundError(
+                    "No eligible ranking snapshot exists for the selected source",
+                    {"as_of": at.isoformat(), "source": ranking_source, "season": season},
+                    code="missing_ranking_snapshot",
+                )
+            ranking = RankingSnapshot.from_row(ranking_row)
+            projection_row = connection.execute(
+                "SELECT * FROM projection_snapshots WHERE observed_at <= ? AND imported_at <= ? "
+                "AND season = ? AND source = ? AND scoring_settings_hash = ? "
+                "ORDER BY observed_at DESC, imported_at DESC, "
+                "projection_snapshot_id DESC LIMIT 1",
+                [at, at, season, projection_source, scoring_hash],
+            ).fetchone()
+            if projection_row is None:
+                incompatible = connection.execute(
+                    "SELECT scoring_settings_hash FROM projection_snapshots "
+                    "WHERE observed_at <= ? AND imported_at <= ? AND season = ? AND source = ? "
+                    "ORDER BY observed_at DESC, imported_at DESC LIMIT 1",
+                    [at, at, season, projection_source],
+                ).fetchone()
+                if incompatible is not None:
+                    raise InputError(
+                        "incompatible_scoring_context",
+                        "Projection scoring settings do not match the selected draft context",
+                        {
+                            "draft_scoring_settings_hash": scoring_hash,
+                            "projection_scoring_settings_hash": str(incompatible[0]),
+                        },
+                    )
+                raise NotFoundError(
+                    "No compatible projection snapshot exists as of the decision time",
+                    {
+                        "as_of": at.isoformat(),
+                        "source": projection_source,
+                        "season": season,
+                    },
+                    code="missing_projection_snapshot",
+                )
+            projection = ProjectionSnapshot.from_row(projection_row)
+            resolved_slot = _resolve_recommendation_draft_slot(
+                draft_snapshot, draft_slot, sleeper_user_id
+            )
+            roster = _recommendation_roster_configuration(scoring_context)
+            team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
+            provider_rows = connection.execute(
+                "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
+                "WHERE provider = 'sleeper' AND first_observed_at <= ? "
+                "ORDER BY provider_player_id",
+                [player_row[1]],
+            ).fetchall()
+            sleeper_to_canonical = {
+                str(provider_id): str(canonical_id) for canonical_id, provider_id in provider_rows
+            }
+            canonical_to_sleepers: dict[str, list[str]] = {}
+            for provider_id, canonical_id in sleeper_to_canonical.items():
+                canonical_to_sleepers.setdefault(canonical_id, []).append(provider_id)
+            completed, unresolved_roster = _recommendation_picks(
+                draft_snapshot, resolved_slot, sleeper_to_canonical
+            )
+            projected_players = _recommendation_projection_players(
+                connection, projection.projection_snapshot_id, canonical_to_sleepers
+            )
+            rankings = _recommendation_rankings(connection, ranking.ranking_snapshot_id)
+        return RecommendationInputs(
+            decision_at=at,
+            team_count=team_count,
+            draft_type=draft_type,
+            draft_rounds=rounds,
+            draft_slot=resolved_slot,
+            roster=roster,
+            completed_picks=completed,
+            projected_players=projected_players,
+            expert_rankings=rankings,
+            unresolved_roster_player_ids=unresolved_roster,
+            provenance=RecommendationProvenance(
+                draft_snapshot_id=draft_snapshot.snapshot_id,
+                player_snapshot_id=str(player_row[0]),
+                ranking_snapshot_id=ranking.ranking_snapshot_id,
+                projection_snapshot_id=projection.projection_snapshot_id,
+                ranking_source=ranking.source,
+                ranking_source_version=ranking.source_version,
+                projection_source=projection.source,
+                projection_source_version=projection.source_version,
+                ranking_resolver_version=ranking.resolver_version,
+                scoring_calculator_version=projection.scoring_calculator_version,
+                scoring_settings_hash=projection.scoring_settings_hash,
+                draft_observed_at=draft_snapshot.observed_at,
+                player_observed_at=player_row[1],
+                player_fetched_at=player_row[2],
+                ranking_observed_at=ranking.observed_at,
+                ranking_imported_at=ranking.imported_at,
+                projection_observed_at=projection.observed_at,
+                projection_imported_at=projection.imported_at,
+                projection_player_snapshot_id=projection.player_snapshot_id,
+                projection_league_snapshot_id=projection.league_snapshot_id,
+                scoring_context_league_id=draft_snapshot.scoring_context_league_id,
+            ),
+        )
+
     def board(
         self,
         at: datetime,
@@ -1320,6 +1500,267 @@ class IntelligenceRepository(SnapshotRepository):
                 ],
             ).fetchall()
         return [BoardPlayer.from_row(row) for row in rows]
+
+
+def _canonical_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _select_recommendation_draft(
+    connection: duckdb.DuckDBPyConnection,
+    at: datetime,
+    draft_id: str | None,
+    league_id: str | None,
+) -> tuple[Any, ...]:
+    if draft_id is not None:
+        row = connection.execute(
+            "SELECT * FROM draft_snapshots WHERE draft_id = ? AND observed_at <= ? "
+            "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+            [draft_id, at],
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(
+                f"Draft {draft_id!r} has no snapshot as of the decision time",
+                {"draft_id": draft_id, "as_of": at.isoformat()},
+                code="draft_not_found",
+            )
+        return row
+    if league_id is None:
+        raise NotFoundError(
+            "No configured league or explicit draft ID was supplied",
+            {"as_of": at.isoformat()},
+            code="no_draft_snapshot",
+        )
+    row = connection.execute(
+        "SELECT * FROM draft_snapshots WHERE observed_at <= ? "
+        "AND coalesce(source_league_id, league_id) = ? "
+        "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+        [at, league_id],
+    ).fetchone()
+    if row is None:
+        raise NotFoundError(
+            "No draft snapshot exists for the configured league as of the decision time",
+            {"league_id": league_id, "as_of": at.isoformat()},
+            code="no_draft_snapshot",
+        )
+    return row
+
+
+def _snapshot_from_row(row: tuple[Any, ...]) -> Snapshot:
+    return Snapshot(
+        snapshot_id=row[0],
+        league_id=row[1],
+        draft_id=row[2],
+        observed_at=row[3],
+        source_updated_at=row[4],
+        payload_hash=row[5],
+        pick_count=row[6],
+        league=json.loads(row[7]),
+        draft=json.loads(row[8]),
+        picks=json.loads(row[9]),
+        source_league_id=row[10],
+        scoring_context_league_id=row[11],
+        scoring_context=json.loads(row[12]) if row[12] is not None else None,
+        draft_context_type=row[13],
+    )
+
+
+def _recommendation_draft_settings(snapshot: Snapshot) -> tuple[int, int, str]:
+    settings = snapshot.draft.get("settings")
+    if not isinstance(settings, dict):
+        raise InputError(
+            "unsupported_draft_format",
+            "Selected draft has no usable settings",
+            {"draft_id": snapshot.draft_id},
+        )
+    try:
+        team_count = int(settings["teams"])
+        rounds = int(settings["rounds"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InputError(
+            "unsupported_draft_format",
+            "Selected draft is missing team or round counts",
+            {"draft_id": snapshot.draft_id},
+        ) from exc
+    return team_count, rounds, str(snapshot.draft.get("type") or "")
+
+
+def _resolve_recommendation_draft_slot(
+    snapshot: Snapshot, explicit_slot: int | None, sleeper_user_id: str | None
+) -> int:
+    team_count, _, _ = _recommendation_draft_settings(snapshot)
+    if explicit_slot is not None:
+        if not 1 <= explicit_slot <= team_count:
+            raise InputError(
+                "invalid_draft_slot",
+                "Draft slot is outside the selected draft's team range",
+                {"draft_slot": explicit_slot, "team_count": team_count},
+            )
+        return explicit_slot
+    draft_order = snapshot.draft.get("draft_order")
+    ordered_slot: int | None = None
+    if sleeper_user_id and isinstance(draft_order, dict) and sleeper_user_id in draft_order:
+        try:
+            ordered_slot = int(draft_order[sleeper_user_id])
+        except (TypeError, ValueError) as exc:
+            raise InputError(
+                "draft_slot_unresolved",
+                "Configured user's draft-order slot is invalid",
+                {"sleeper_user_id": sleeper_user_id},
+            ) from exc
+    inferred_slots = {
+        int(pick["draft_slot"])
+        for pick in snapshot.picks
+        if sleeper_user_id
+        and str(pick.get("picked_by")) == sleeper_user_id
+        and pick.get("draft_slot") is not None
+    }
+    if len(inferred_slots) > 1 or (
+        ordered_slot is not None and inferred_slots and inferred_slots != {ordered_slot}
+    ):
+        raise InputError(
+            "draft_slot_conflict",
+            "Configured user is associated with conflicting draft slots",
+            {
+                "sleeper_user_id": sleeper_user_id,
+                "draft_order_slot": ordered_slot,
+                "picked_by_slots": sorted(inferred_slots),
+            },
+        )
+    resolved = ordered_slot or (next(iter(inferred_slots)) if inferred_slots else None)
+    if resolved is None:
+        raise InputError(
+            "draft_slot_unresolved",
+            "Draft slot could not be resolved; pass --draft-slot",
+            {"draft_id": snapshot.draft_id},
+        )
+    if not 1 <= resolved <= team_count:
+        raise InputError(
+            "invalid_draft_slot",
+            "Resolved draft slot is outside the selected draft's team range",
+            {"draft_slot": resolved, "team_count": team_count},
+        )
+    return resolved
+
+
+def _recommendation_roster_configuration(context: dict[str, Any]) -> RosterConfiguration:
+    positions = context.get("roster_positions")
+    if not isinstance(positions, list):
+        raise InputError(
+            "unsupported_roster_format",
+            "Selected scoring context has no roster positions",
+        )
+    counts = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "FLEX": 0, "BN": 0}
+    ignored = {"K", "DEF", "DST"}
+    for raw_position in positions:
+        position = str(raw_position).upper()
+        if position in counts:
+            counts[position] += 1
+        elif position in ignored:
+            continue
+        else:
+            raise InputError(
+                "unsupported_roster_format",
+                "Selected league contains an unsupported roster slot",
+                {"roster_position": position},
+            )
+    return RosterConfiguration(
+        qb=counts["QB"],
+        rb=counts["RB"],
+        wr=counts["WR"],
+        te=counts["TE"],
+        flex=counts["FLEX"],
+        bench=counts["BN"],
+    )
+
+
+def _recommendation_picks(
+    snapshot: Snapshot,
+    resolved_slot: int,
+    sleeper_to_canonical: dict[str, str],
+) -> tuple[tuple[CompletedDraftPick, ...], tuple[str, ...]]:
+    slot_to_roster = snapshot.draft.get("slot_to_roster_id")
+    expected_roster = None
+    if isinstance(slot_to_roster, dict):
+        expected_roster = slot_to_roster.get(str(resolved_slot), slot_to_roster.get(resolved_slot))
+    completed: list[CompletedDraftPick] = []
+    unresolved: list[str] = []
+    for index, pick in enumerate(snapshot.picks, start=1):
+        player_id = _text(pick.get("player_id"))
+        pick_slot = pick.get("draft_slot")
+        belongs_to_user = pick_slot is not None and int(pick_slot) == resolved_slot
+        if pick_slot is None and expected_roster is not None:
+            belongs_to_user = str(pick.get("roster_id")) == str(expected_roster)
+        canonical_id = sleeper_to_canonical.get(player_id) if player_id else None
+        completed.append(
+            CompletedDraftPick(
+                pick_no=int(pick.get("pick_no", index)),
+                draft_slot=(
+                    resolved_slot
+                    if belongs_to_user
+                    else int(pick_slot)
+                    if pick_slot is not None
+                    else None
+                ),
+                canonical_player_id=canonical_id,
+                sleeper_player_id=player_id,
+            )
+        )
+        if belongs_to_user and player_id and canonical_id is None:
+            unresolved.append(player_id)
+    return tuple(sorted(completed, key=lambda pick: pick.pick_no)), tuple(sorted(set(unresolved)))
+
+
+def _recommendation_projection_players(
+    connection: duckdb.DuckDBPyConnection,
+    snapshot_id: str,
+    canonical_to_sleepers: dict[str, list[str]],
+) -> tuple[RecommendationPlayerInput, ...]:
+    rows = connection.execute(
+        "SELECT canonical_player_id, source_player_name, position, team, "
+        "cbs_projected_points, league_known_component_points, league_projected_points, "
+        "scoring_completeness, unprojected_scoring_keys FROM projection_entries "
+        "WHERE projection_snapshot_id = ? AND match_status = 'matched' "
+        "AND canonical_player_id IS NOT NULL AND upper(position) IN ('QB','RB','WR','TE') "
+        "QUALIFY row_number() OVER (PARTITION BY canonical_player_id "
+        "ORDER BY source_position, source_row_number) = 1 ORDER BY canonical_player_id",
+        [snapshot_id],
+    ).fetchall()
+    return tuple(
+        RecommendationPlayerInput(
+            canonical_player_id=str(row[0]),
+            sleeper_player_id=min(canonical_to_sleepers.get(str(row[0]), []), default=None),
+            player_name=str(row[1]),
+            position=cast(OffensivePosition, str(row[2]).upper()),
+            team=_text(row[3]),
+            cbs_projected_points=row[4],
+            league_known_component_points=row[5],
+            league_projected_points=row[6],
+            scoring_completeness=cast(Literal["complete", "partial"], str(row[7])),
+            unprojected_scoring_keys=tuple(json.loads(row[8])),
+        )
+        for row in rows
+    )
+
+
+def _recommendation_rankings(
+    connection: duckdb.DuckDBPyConnection, snapshot_id: str
+) -> tuple[ExpertRankingInput, ...]:
+    rows = connection.execute(
+        "SELECT canonical_player_id, overall_rank, positional_rank FROM ranking_entries "
+        "WHERE ranking_snapshot_id = ? AND match_status = 'matched' "
+        "AND canonical_player_id IS NOT NULL QUALIFY row_number() OVER ("
+        "PARTITION BY canonical_player_id ORDER BY overall_rank NULLS LAST, source_row_number) = 1 "
+        "ORDER BY canonical_player_id",
+        [snapshot_id],
+    ).fetchall()
+    return tuple(
+        ExpertRankingInput(
+            canonical_player_id=str(row[0]), overall_rank=row[1], positional_rank=row[2]
+        )
+        for row in rows
+    )
 
 
 _PROJECTION_ENTRY_FIELDS = (
