@@ -259,6 +259,17 @@ CREATE TABLE projection_match_issues (
 );
 """
 
+MIGRATION_8 = """
+ALTER TABLE draft_snapshots ALTER COLUMN league_id DROP NOT NULL;
+ALTER TABLE draft_snapshots ADD COLUMN source_league_id VARCHAR;
+ALTER TABLE draft_snapshots ADD COLUMN scoring_context_league_id VARCHAR;
+ALTER TABLE draft_snapshots ADD COLUMN scoring_context_payload JSON;
+ALTER TABLE draft_snapshots ADD COLUMN draft_context_type VARCHAR;
+UPDATE draft_snapshots SET source_league_id = league_id,
+ scoring_context_league_id = league_id, scoring_context_payload = league_payload,
+ draft_context_type = 'league';
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
@@ -267,6 +278,7 @@ MIGRATIONS = (
     (5, "m2_player_source_observations", MIGRATION_5),
     (6, "m2_ranking_resolution_provenance", MIGRATION_6),
     (7, "projection_intelligence", MIGRATION_7),
+    (8, "standalone_draft_context", MIGRATION_8),
 )
 
 
@@ -336,7 +348,11 @@ class SnapshotRepository:
             connection.begin()
             try:
                 connection.execute(
-                    "INSERT INTO draft_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO draft_snapshots (snapshot_id, league_id, draft_id, observed_at, "
+                    "source_updated_at, payload_hash, pick_count, league_payload, draft_payload, "
+                    "picks_payload, source_league_id, scoring_context_league_id, "
+                    "scoring_context_payload, draft_context_type) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         snapshot.snapshot_id,
                         snapshot.league_id,
@@ -348,6 +364,20 @@ class SnapshotRepository:
                         json.dumps(snapshot.league),
                         json.dumps(snapshot.draft),
                         json.dumps(snapshot.picks),
+                        snapshot.source_league_id
+                        if snapshot.source_league_id is not None
+                        else snapshot.league_id,
+                        snapshot.scoring_context_league_id
+                        if snapshot.scoring_context_league_id is not None
+                        else snapshot.league_id,
+                        json.dumps(snapshot.scoring_context)
+                        if snapshot.scoring_context is not None
+                        else (
+                            json.dumps(snapshot.league)
+                            if snapshot.draft_context_type == "league"
+                            else None
+                        ),
+                        snapshot.draft_context_type,
                     ],
                 )
                 for index, pick in enumerate(snapshot.picks, start=1):
@@ -403,7 +433,17 @@ class SnapshotRepository:
             league=json.loads(row[7]),
             draft=json.loads(row[8]),
             picks=json.loads(row[9]),
+            source_league_id=row[10],
+            scoring_context_league_id=row[11],
+            scoring_context=json.loads(row[12]) if row[12] is not None else None,
+            draft_context_type=row[13],
         )
+
+    def stored_draft_ids(self) -> set[str]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute("SELECT DISTINCT draft_id FROM draft_snapshots").fetchall()
+        return {str(row[0]) for row in rows}
 
 
 def _text(value: Any) -> str | None:

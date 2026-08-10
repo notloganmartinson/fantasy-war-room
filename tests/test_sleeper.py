@@ -18,6 +18,7 @@ def test_all_adapter_methods(api: Any, sleeper_payloads: dict[str, Any]) -> None
     client = SleeperClient("https://api.sleeper.app/v1", 1)
     assert client.get_user("alice")["user_id"] == "u1"
     assert client.get_user_leagues("u1", "2026")[0]["league_id"] == "l1"
+    assert client.get_user_drafts("u1", "2026")[1]["draft_id"] == "mock1"
     assert client.get_league("l1")["name"] == "Friends"
     assert client.get_league_drafts("l1")[0]["draft_id"] == "d1"
     assert client.get_draft("d1")["draft_id"] == "d1"

@@ -48,6 +48,19 @@ def sleeper_payloads() -> dict[str, Any]:
             "league_id": "l1",
             "created": 1000,
             "status_updated": 1_700_000_000_000,
+            "type": "snake",
+            "season": "2026",
+            "settings": {"teams": 10, "rounds": 15},
+        },
+        "mock_draft": {
+            "draft_id": "mock1",
+            "league_id": None,
+            "created": 1001,
+            "status": "drafting",
+            "type": "snake",
+            "season": "2026",
+            "settings": {"teams": 10, "rounds": 15},
+            "metadata": {"name": "Standalone mock"},
         },
         "picks": [
             {
@@ -76,10 +89,15 @@ def register_sleeper(
     api.get(f"{base}/user/u1/leagues/nfl/2026").mock(
         return_value=_response(200, [payloads["league"]])
     )
+    api.get(f"{base}/user/u1/drafts/nfl/2026").mock(
+        return_value=_response(200, [payloads["draft"], payloads["mock_draft"]])
+    )
     api.get(f"{base}/league/l1").mock(return_value=_response(200, payloads["league"]))
     api.get(f"{base}/league/l1/drafts").mock(return_value=_response(200, [payloads["draft"]]))
     api.get(f"{base}/draft/d1").mock(return_value=_response(200, payloads["draft"]))
     api.get(f"{base}/draft/d1/picks").mock(return_value=_response(200, picks or payloads["picks"]))
+    api.get(f"{base}/draft/mock1").mock(return_value=_response(200, payloads["mock_draft"]))
+    api.get(f"{base}/draft/mock1/picks").mock(return_value=_response(200, []))
     api.get(f"{base}/players/nfl").mock(
         return_value=_response(
             200,

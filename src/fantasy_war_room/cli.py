@@ -16,7 +16,13 @@ from fantasy_war_room.config import (
     load_settings,
     save_settings,
 )
-from fantasy_war_room.errors import ConfigurationError, ExitCode, FwrError, NotFoundError
+from fantasy_war_room.errors import (
+    ConfigurationError,
+    ExitCode,
+    FwrError,
+    InputError,
+    NotFoundError,
+)
 from fantasy_war_room.intelligence import (
     import_rankings,
     normalize_name,
@@ -28,6 +34,7 @@ from fantasy_war_room.rendering import (
     diagnostic,
     emit_json,
     render_board,
+    render_drafts,
     render_leagues,
     render_players,
     render_projection_issues,
@@ -38,7 +45,13 @@ from fantasy_war_room.rendering import (
 )
 from fantasy_war_room.repository import IntelligenceRepository, SnapshotRepository
 from fantasy_war_room.services import discover as discover_leagues
-from fantasy_war_room.services import parse_timestamp, select_draft
+from fantasy_war_room.services import (
+    discover_drafts,
+    parse_timestamp,
+    select_draft,
+    sync_by_draft_id,
+    watch_by_draft_id,
+)
 from fantasy_war_room.services import sync as sync_draft
 from fantasy_war_room.services import watch as watch_draft
 from fantasy_war_room.sleeper import SleeperClient
@@ -49,9 +62,11 @@ app = typer.Typer(
 players_app = typer.Typer(help="Synchronize and search the local player directory.")
 rankings_app = typer.Typer(help="Import and inspect ranking snapshots.")
 projections_app = typer.Typer(help="Import and inspect statistical projection snapshots.")
+drafts_app = typer.Typer(help="Discover Sleeper league and standalone drafts.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
+app.add_typer(drafts_app, name="drafts")
 
 
 def _run[T](
@@ -214,17 +229,32 @@ def discover(
 @app.command()
 def sync(
     league_id: str | None = typer.Option(None),
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    scoring_context_league_id: str | None = typer.Option(None, "--scoring-context-league-id"),
     db_path: Path | None = typer.Option(None),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     def operation() -> dict[str, Any]:
+        if league_id and draft_id:
+            raise InputError(
+                "draft_selection_conflict", "Supply either --league-id or --draft-id, not both"
+            )
         settings = load_settings(sleeper_league_id=league_id, db_path=db_path)
         ensure_directories(settings)
         client = _client(settings)
         try:
-            snapshot, created = sync_draft(
-                client, SnapshotRepository(settings.db_path), settings.sleeper_league_id
-            )
+            repository = SnapshotRepository(settings.db_path)
+            if draft_id:
+                snapshot, created = sync_by_draft_id(
+                    client, repository, draft_id, scoring_context_league_id
+                )
+            else:
+                if scoring_context_league_id:
+                    raise InputError(
+                        "scoring_context_requires_draft_id",
+                        "--scoring-context-league-id requires --draft-id",
+                    )
+                snapshot, created = sync_draft(client, repository, settings.sleeper_league_id)
         finally:
             client.close()
         return {"created": created, "snapshot": snapshot}
@@ -268,32 +298,84 @@ def state_at(
 @app.command()
 def watch(
     league_id: str | None = typer.Option(None),
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    scoring_context_league_id: str | None = typer.Option(None, "--scoring-context-league-id"),
     interval: float | None = typer.Option(None),
     db_path: Path | None = typer.Option(None),
 ) -> None:
+    if league_id and draft_id:
+        raise typer.BadParameter("supply either --league-id or --draft-id, not both")
     settings = load_settings(sleeper_league_id=league_id, poll_seconds=interval, db_path=db_path)
-    if not settings.sleeper_league_id:
+    if not draft_id and not settings.sleeper_league_id:
         raise typer.BadParameter("a league ID is required")
     repository = SnapshotRepository(settings.db_path)
     client = _client(settings)
     try:
-        draft = client.get_draft(
-            str(select_draft(client.get_league_drafts(settings.sleeper_league_id))["draft_id"])
-        )
-        watch_draft(
-            client,
-            repository,
-            settings.sleeper_league_id,
-            draft,
-            settings.poll_seconds,
-            on_snapshot=lambda snapshot: stdout.print(
-                f"{snapshot.pick_count} picks at {snapshot.observed_at.isoformat()}"
-            ),
-        )
+
+        def on_snapshot(snapshot: Any) -> None:
+            stdout.print(f"{snapshot.pick_count} picks at {snapshot.observed_at.isoformat()}")
+
+        if draft_id:
+            watch_by_draft_id(
+                client,
+                repository,
+                draft_id,
+                settings.poll_seconds,
+                scoring_context_league_id,
+                on_snapshot=on_snapshot,
+            )
+        else:
+            if scoring_context_league_id:
+                raise typer.BadParameter("--scoring-context-league-id requires --draft-id")
+            selected_league_id = settings.sleeper_league_id
+            if selected_league_id is None:
+                raise typer.BadParameter("a league ID is required")
+            selected = select_draft(client.get_league_drafts(selected_league_id))
+            draft = client.get_draft(str(selected["draft_id"]))
+            watch_draft(
+                client,
+                repository,
+                selected_league_id,
+                draft,
+                settings.poll_seconds,
+                on_snapshot=on_snapshot,
+            )
     except KeyboardInterrupt:
         diagnostic("Stopped.")
     finally:
         client.close()
+
+
+@drafts_app.command("list")
+def drafts_list(
+    season: str | None = typer.Option(None),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Discover league-associated and standalone Sleeper drafts for the configured user."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(season=season, db_path=db_path)
+        if not settings.sleeper_user_id and not settings.sleeper_username:
+            raise ConfigurationError(
+                "missing_user", "A configured Sleeper user is required to list drafts"
+            )
+        ensure_directories(settings)
+        repository = SnapshotRepository(settings.db_path)
+        client = _client(settings)
+        try:
+            user_id = settings.sleeper_user_id
+            if not user_id:
+                user = client.get_user(str(settings.sleeper_username))
+                user_id = str(user["user_id"])
+            drafts = discover_drafts(
+                client, user_id, settings.season, repository.stored_draft_ids()
+            )
+        finally:
+            client.close()
+        return {"user_id": user_id, "season": settings.season, "drafts": drafts}
+
+    _run("drafts list", json_output, operation, lambda result: render_drafts(result["drafts"]))
 
 
 @players_app.command("sync")

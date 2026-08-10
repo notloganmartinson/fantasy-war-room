@@ -39,7 +39,10 @@ working directory.
 
 ```console
 uv run fwr discover
+uv run fwr drafts list
 uv run fwr sync
+uv run fwr sync --draft-id STANDALONE_DRAFT_ID
+uv run fwr watch --draft-id STANDALONE_DRAFT_ID
 uv run fwr state-at --draft-id 987654 --at 2026-07-31T19:00:00-05:00
 uv run fwr watch --interval 2
 uv run fwr players sync
@@ -47,6 +50,13 @@ uv run fwr players search "Josh Allen" --as-of 2026-08-01T12:00:00Z
 uv run fwr rankings list
 uv run fwr board --source my-rankings --as-of 2026-08-20T19:00:00Z
 ```
+
+`drafts list` discovers both league-associated and standalone Sleeper drafts for the configured
+user. `sync --draft-id` and `watch --draft-id` operate on that exact draft instead of selecting a
+league's newest draft. League drafts use their associated league scoring context. A standalone
+mock does not inherit configured scoring implicitly; when needed, associate it explicitly with
+`--scoring-context-league-id LEAGUE_ID`. The source draft and scoring context remain distinct in
+snapshot provenance.
 
 Player synchronization caches the canonical raw Sleeper NFL player directory under the XDG
 cache directory for 24 hours. A fresh cache avoids all network access; `players sync --force`

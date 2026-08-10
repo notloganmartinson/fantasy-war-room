@@ -50,6 +50,24 @@ def render_leagues(leagues: list[Any]) -> None:
     stdout.print(table)
 
 
+def render_drafts(drafts: list[Any]) -> None:
+    table = Table(title="Sleeper drafts")
+    for heading in ("Name", "Draft ID", "Status", "Type", "Season", "Teams", "League", "Local"):
+        table.add_column(heading)
+    for draft in drafts:
+        table.add_row(
+            draft.name or "-",
+            draft.draft_id,
+            draft.status,
+            draft.draft_type,
+            draft.season,
+            str(draft.team_count),
+            draft.league_id or "standalone",
+            "yes" if draft.locally_stored else "no",
+        )
+    stdout.print(table)
+
+
 def render_players(players: list[Any]) -> None:
     table = Table(title="Players")
     for heading in ("Name", "Position", "Team", "Sleeper ID"):

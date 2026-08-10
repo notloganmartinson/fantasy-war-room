@@ -28,6 +28,9 @@ def test_watch_persists_only_changed_draft_states(
     api.get(f"{base}/league/l1").mock(
         return_value=httpx.Response(200, json=sleeper_payloads["league"])
     )
+    draft_route = api.get(f"{base}/draft/d1").mock(
+        return_value=httpx.Response(200, json=sleeper_payloads["draft"])
+    )
     repository = SnapshotRepository(tmp_path / "history.duckdb")
     observed: list[Snapshot] = []
     client = SleeperClient(base, 1)
@@ -47,6 +50,7 @@ def test_watch_persists_only_changed_draft_states(
         client.close()
 
     assert picks_route.call_count == 3
+    assert draft_route.call_count == 3
     assert [snapshot.pick_count for snapshot in observed] == [0, 1]
     assert repository.state_at("d1", observed[0].observed_at) == observed[0]
     assert repository.state_at("d1", observed[1].observed_at) == observed[1]

@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
-from fantasy_war_room.models import LeagueSummary, Snapshot
+from fantasy_war_room.models import DraftSummary, LeagueSummary, Snapshot
 from fantasy_war_room.repository import SnapshotRepository
 from fantasy_war_room.sleeper import SleeperProvider
 
@@ -45,6 +45,16 @@ def select_draft(drafts: list[dict[str, Any]]) -> dict[str, Any]:
     return max(drafts, key=lambda item: int(item.get("created", 0)))
 
 
+def discover_drafts(
+    provider: SleeperProvider, user_id: str, season: str, stored_draft_ids: set[str]
+) -> list[DraftSummary]:
+    drafts = provider.get_user_drafts(user_id, season)
+    return sorted(
+        [_draft_summary(draft, season, stored_draft_ids) for draft in drafts],
+        key=lambda draft: (draft.status, draft.draft_id),
+    )
+
+
 def sync(
     provider: SleeperProvider,
     repository: SnapshotRepository,
@@ -58,21 +68,94 @@ def sync(
     draft_id = str(selected["draft_id"])
     draft = provider.get_draft(draft_id)
     picks = provider.get_draft_picks(draft_id)
-    payload = {"league": league, "draft": draft, "picks": picks}
+    return _persist_draft_state(
+        repository,
+        league,
+        league_id,
+        league_id,
+        league,
+        "league",
+        draft,
+        picks,
+        observed_at,
+    )
+
+
+def sync_by_draft_id(
+    provider: SleeperProvider,
+    repository: SnapshotRepository,
+    draft_id: str,
+    scoring_context_league_id: str | None = None,
+    observed_at: datetime | None = None,
+) -> tuple[Snapshot, bool]:
+    draft = provider.get_draft(draft_id)
+    context = _resolve_draft_context(provider, draft, scoring_context_league_id)
+    picks = provider.get_draft_picks(draft_id)
+    return _persist_draft_state(repository, *context, draft, picks, observed_at)
+
+
+def _persist_draft_state(
+    repository: SnapshotRepository,
+    league: dict[str, Any],
+    source_league_id: str | None,
+    scoring_context_league_id: str | None,
+    scoring_context: dict[str, Any] | None,
+    draft_context_type: str,
+    draft: dict[str, Any],
+    picks: list[dict[str, Any]],
+    observed_at: datetime | None = None,
+) -> tuple[Snapshot, bool]:
+    snapshot = _build_draft_snapshot(
+        league,
+        source_league_id,
+        scoring_context_league_id,
+        scoring_context,
+        draft_context_type,
+        draft,
+        picks,
+        observed_at,
+    )
+    return snapshot, repository.insert(snapshot)
+
+
+def _build_draft_snapshot(
+    league: dict[str, Any],
+    source_league_id: str | None,
+    scoring_context_league_id: str | None,
+    scoring_context: dict[str, Any] | None,
+    draft_context_type: str,
+    draft: dict[str, Any],
+    picks: list[dict[str, Any]],
+    observed_at: datetime | None = None,
+) -> Snapshot:
+    canonical_picks = sorted(
+        picks,
+        key=lambda pick: (
+            int(pick.get("pick_no") or 0),
+            json.dumps(pick, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    payload: dict[str, Any] = {"league": league, "draft": draft, "picks": picks}
+    payload["picks"] = canonical_picks
+    if source_league_id is None:
+        payload["scoring_context"] = scoring_context
     source_updated_at = _sleeper_timestamp(draft.get("last_picked") or draft.get("status_updated"))
-    snapshot = Snapshot(
+    return Snapshot(
         snapshot_id=str(uuid4()),
-        league_id=league_id,
-        draft_id=draft_id,
+        league_id=source_league_id,
+        draft_id=str(draft["draft_id"]),
         observed_at=observed_at or datetime.now(UTC),
         source_updated_at=source_updated_at,
         payload_hash=canonical_hash(payload),
-        pick_count=len(picks),
+        pick_count=len(canonical_picks),
         league=league,
         draft=draft,
-        picks=picks,
+        picks=canonical_picks,
+        source_league_id=source_league_id,
+        scoring_context_league_id=scoring_context_league_id,
+        scoring_context=scoring_context,
+        draft_context_type=draft_context_type,
     )
-    return snapshot, repository.insert(snapshot)
 
 
 def watch(
@@ -85,21 +168,126 @@ def watch(
     max_polls: int | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    league = provider.get_league(league_id)
-    draft_id = str(draft["draft_id"])
+    _watch_exact_draft(
+        provider,
+        repository,
+        str(draft["draft_id"]),
+        poll_seconds,
+        league_id,
+        on_snapshot,
+        max_polls,
+        sleep,
+    )
+
+
+def watch_by_draft_id(
+    provider: SleeperProvider,
+    repository: SnapshotRepository,
+    draft_id: str,
+    poll_seconds: float,
+    scoring_context_league_id: str | None = None,
+    on_snapshot: Callable[[Snapshot], None] | None = None,
+    max_polls: int | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    _watch_exact_draft(
+        provider,
+        repository,
+        draft_id,
+        poll_seconds,
+        scoring_context_league_id,
+        on_snapshot,
+        max_polls,
+        sleep,
+    )
+
+
+def _watch_exact_draft(
+    provider: SleeperProvider,
+    repository: SnapshotRepository,
+    draft_id: str,
+    poll_seconds: float,
+    scoring_context_league_id: str | None,
+    on_snapshot: Callable[[Snapshot], None] | None,
+    max_polls: int | None,
+    sleep: Callable[[float], None],
+) -> None:
     last_hash: str | None = None
     polls = 0
     while max_polls is None or polls < max_polls:
+        draft = provider.get_draft(draft_id)
+        context = _resolve_draft_context(provider, draft, scoring_context_league_id)
         picks = provider.get_draft_picks(draft_id)
         polls += 1
-        current_hash = canonical_hash(picks)
-        if current_hash != last_hash:
-            snapshot, created = sync(_StaticProvider(league, draft, picks), repository, league_id)
+        snapshot = _build_draft_snapshot(*context, draft, picks)
+        if snapshot.payload_hash != last_hash:
+            created = repository.insert(snapshot)
             if created and on_snapshot is not None:
                 on_snapshot(snapshot)
-            last_hash = current_hash
+            last_hash = snapshot.payload_hash
         if max_polls is None or polls < max_polls:
             sleep(poll_seconds)
+
+
+def require_draft_scoring_context(snapshot: Snapshot) -> dict[str, Any]:
+    if snapshot.scoring_context_league_id is None or snapshot.scoring_context is None:
+        raise ConfigurationError(
+            "mock_scoring_context_required",
+            "Standalone draft has no explicit league scoring context",
+            {"draft_id": snapshot.draft_id},
+        )
+    return snapshot.scoring_context
+
+
+def _resolve_draft_context(
+    provider: SleeperProvider,
+    draft: dict[str, Any],
+    scoring_context_league_id: str | None,
+) -> tuple[dict[str, Any], str | None, str | None, dict[str, Any] | None, str]:
+    source_value = draft.get("league_id")
+    source_league_id = str(source_value) if source_value not in {None, ""} else None
+    if source_league_id is not None:
+        if scoring_context_league_id not in {None, source_league_id}:
+            raise InputError(
+                "scoring_context_mismatch",
+                "League-associated draft must use its own league scoring context",
+                {
+                    "draft_id": str(draft.get("draft_id")),
+                    "source_league_id": source_league_id,
+                    "requested_scoring_context_league_id": scoring_context_league_id,
+                },
+            )
+        league = provider.get_league(source_league_id)
+        return league, source_league_id, source_league_id, league, "league"
+    if scoring_context_league_id is None:
+        return {}, None, None, None, "standalone"
+    scoring_context = provider.get_league(scoring_context_league_id)
+    return {}, None, scoring_context_league_id, scoring_context, "standalone"
+
+
+def _draft_summary(
+    draft: dict[str, Any], fallback_season: str, stored_draft_ids: set[str]
+) -> DraftSummary:
+    raw_settings = draft.get("settings")
+    raw_metadata = draft.get("metadata")
+    settings: dict[str, Any] = raw_settings if isinstance(raw_settings, dict) else {}
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    league_value = draft.get("league_id")
+    league_id = str(league_value) if league_value not in {None, ""} else None
+    draft_id = str(draft["draft_id"])
+    rounds_value = settings.get("rounds")
+    return DraftSummary(
+        draft_id=draft_id,
+        status=str(draft.get("status") or "unknown"),
+        draft_type=str(draft.get("type") or "unknown"),
+        season=str(draft.get("season") or fallback_season),
+        team_count=int(settings.get("teams") or 0),
+        rounds=int(rounds_value) if rounds_value is not None else None,
+        league_id=league_id,
+        is_mock=league_id is None,
+        name=str(metadata.get("name") or metadata.get("title") or "") or None,
+        locally_stored=draft_id in stored_draft_ids,
+    )
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -119,28 +307,3 @@ def _sleeper_timestamp(value: Any) -> datetime | None:
     if numeric > 10_000_000_000:
         numeric /= 1000
     return datetime.fromtimestamp(numeric, UTC)
-
-
-class _StaticProvider:
-    def __init__(
-        self, league: dict[str, Any], draft: dict[str, Any], picks: list[dict[str, Any]]
-    ) -> None:
-        self.league, self.draft, self.picks = league, draft, picks
-
-    def get_user(self, username_or_id: str) -> dict[str, Any]:
-        raise NotImplementedError
-
-    def get_user_leagues(self, user_id: str, season: str) -> list[dict[str, Any]]:
-        raise NotImplementedError
-
-    def get_league(self, league_id: str) -> dict[str, Any]:
-        return self.league
-
-    def get_league_drafts(self, league_id: str) -> list[dict[str, Any]]:
-        return [self.draft]
-
-    def get_draft(self, draft_id: str) -> dict[str, Any]:
-        return self.draft
-
-    def get_draft_picks(self, draft_id: str) -> list[dict[str, Any]]:
-        return self.picks

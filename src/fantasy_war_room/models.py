@@ -17,9 +17,9 @@ class LeagueSummary(BaseModel):
 
 
 class Snapshot(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     snapshot_id: str
-    league_id: str
+    league_id: str | None
     draft_id: str
     observed_at: datetime
     source_updated_at: datetime | None
@@ -28,6 +28,24 @@ class Snapshot(BaseModel):
     league: dict[str, Any]
     draft: dict[str, Any]
     picks: list[dict[str, Any]]
+    source_league_id: str | None = None
+    scoring_context_league_id: str | None = None
+    scoring_context: dict[str, Any] | None = None
+    draft_context_type: str = "league"
+
+
+class DraftSummary(BaseModel):
+    schema_version: str = "1.0"
+    draft_id: str
+    status: str
+    draft_type: str
+    season: str
+    team_count: int
+    rounds: int | None = None
+    league_id: str | None = None
+    is_mock: bool
+    name: str | None = None
+    locally_stored: bool = False
 
 
 class PlayerDirectorySnapshot(BaseModel):
