@@ -297,6 +297,110 @@ def test_reserved_qb_target_ends_when_missed_or_acquired_and_can_be_abandoned() 
     assert abandoned_result.actionable_choice.raw_candidate.player_name == "QB One"
 
 
+def test_reserved_target_market_window_is_capped_by_last_feasible_acquisition_pick() -> None:
+    inputs = _slot_seven_inputs_before(114)
+    result = apply_strategy(
+        recommend(inputs, "trusted-board-1.1"),
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="too_early"),
+    )
+    kyler = next(target for target in result.targets if target.player_name == "Kyler Murray")
+
+    assert kyler.latest_feasible_acquisition_pick == 127
+    assert kyler.state == "too_early"
+    assert result.reserved_position_targets[0].latest_feasible_acquisition_pick == 127
+
+
+def test_reserved_target_becomes_actionable_at_position_deadline() -> None:
+    inputs = _slot_seven_inputs_before(127)
+    raw = _raw_with_order(inputs, ("WR One", "Kyler Murray", "QB One"))
+    result = apply_strategy(
+        raw,
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="too_early"),
+    )
+    kyler = next(target for target in result.targets if target.player_name == "Kyler Murray")
+
+    assert kyler.state == "last_reasonable_chance"
+    assert "Roster feasibility moved the action point earlier" in kyler.reason
+    assert "probability" not in kyler.reason.casefold()
+    assert result.actionable_choice is not None
+    assert result.actionable_choice.raw_candidate.player_name == "Kyler Murray"
+    assert result.actionable_choice.target_promotion_class == "reserved_position_deadline"
+
+
+def test_reserved_target_uses_normal_market_window_before_deadline() -> None:
+    inputs = _slot_seven_inputs_before(107)
+    result = apply_strategy(
+        recommend(inputs, "trusted-board-1.1"),
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="in_effective_window"),
+    )
+    kyler = next(target for target in result.targets if target.player_name == "Kyler Murray")
+
+    assert kyler.latest_feasible_acquisition_pick == 127
+    assert kyler.state == "in_window"
+    assert kyler.reason == "Current round is inside the effective target window"
+
+
+def test_opponent_drafting_reserved_target_before_deadline_releases_position() -> None:
+    players = _players()
+    kyler_id = next(row.canonical_player_id for row in players if row.player_name == "Kyler Murray")
+    inputs = _slot_seven_inputs_before(107, opponent_target_id=kyler_id)
+    raw = _raw_with_order(inputs, ("QB One", "WR One"))
+    result = apply_strategy(
+        raw,
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="too_early"),
+    )
+
+    assert result.reserved_position_targets[0].target_state == "selected_by_opponent"
+    assert result.reserved_position_targets[0].active is False
+    assert result.actionable_choice is not None
+    assert result.actionable_choice.raw_candidate.player_name == "QB One"
+
+
+def test_reserved_target_deadline_preserves_exact_k_def_completion_boundary() -> None:
+    inputs = _slot_seven_inputs_before(134)
+    result = apply_strategy(
+        recommend(inputs, "trusted-board-1.1"),
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="too_early"),
+    )
+
+    assert result.roster_completion_required is True
+    assert result.actionable is False
+    assert result.directive is not None
+    assert result.directive.boundary_status == "exact_boundary"
+    assert result.remaining_user_selections == 2
+    assert result.unfilled_required_positions == ("K", "DEF")
+
+
+def test_reserved_target_deadline_is_deterministic_and_decision_time_independent() -> None:
+    inputs = _slot_seven_inputs_before(127)
+    later_as_of = inputs.model_copy(update={"decision_at": inputs.decision_at + timedelta(hours=1)})
+    first = apply_strategy(
+        recommend(inputs, "trusted-board-1.1"),
+        inputs,
+        _slot_seven_profile(),
+        market_context=_kyler_market(inputs, classification="too_early"),
+    )
+    second = apply_strategy(
+        recommend(later_as_of, "trusted-board-1.1"),
+        later_as_of,
+        _slot_seven_profile(),
+        market_context=_kyler_market(later_as_of, classification="too_early"),
+    )
+
+    assert first.targets == second.targets
+    assert first.reserved_position_targets == second.reserved_position_targets
+
+
 def test_te2_uses_lineup_flex_value_then_bench_value_then_redundancy() -> None:
     players = _players()
     ids = {row.player_name: row.canonical_player_id for row in players}
@@ -873,6 +977,73 @@ def _raw_with_order(inputs: RecommendationInputs, names: tuple[str, ...]):
             )
         }
     )
+
+
+def _slot_seven_profile():
+    return _profile(team_count=10, flex=2).model_copy(update={"compatible_draft_slots": (7,)})
+
+
+def _slot_seven_inputs_before(
+    next_pick: int, *, opponent_target_id: str | None = None
+) -> RecommendationInputs:
+    base_players = _players()
+    filler_players = tuple(
+        RecommendationPlayerInput(
+            canonical_player_id=f"filler-{position.casefold()}-{index}",
+            player_name=f"Filler {position} {index}",
+            position=position,
+            team="FA",
+            league_projected_points=150.0 - index,
+            cbs_projected_points=150.0 - index,
+            scoring_completeness="complete",
+        )
+        for position in ("QB", "RB", "WR", "TE")
+        for index in range(1, 31)
+    )
+    inputs = _inputs(players=(*base_players, *filler_players), draft_rounds=15).model_copy(
+        update={
+            "team_count": 10,
+            "draft_slot": 7,
+            "roster": RosterConfiguration(qb=1, rb=2, wr=2, te=1, flex=2, bench=5, k=1, defense=1),
+        }
+    )
+    completed = []
+    for pick_no in range(1, next_pick):
+        round_no = (pick_no - 1) // 10 + 1
+        within_round = (pick_no - 1) % 10 + 1
+        slot = within_round if round_no % 2 else 11 - within_round
+        completed.append(
+            CompletedDraftPick(
+                pick_no=pick_no,
+                draft_slot=slot,
+                canonical_player_id=opponent_target_id
+                if opponent_target_id is not None and pick_no == 100
+                else None,
+                position="RB" if slot == 7 else None,
+            )
+        )
+    return inputs.model_copy(update={"completed_picks": tuple(completed)})
+
+
+def _kyler_market(inputs: RecommendationInputs, *, classification: str) -> dict[str, object]:
+    kyler_id = next(
+        row.canonical_player_id
+        for row in inputs.projected_players
+        if row.player_name == "Kyler Murray"
+    )
+    return {
+        "players": (
+            {
+                "canonical_player_id": kyler_id,
+                "overall_adp": 146.6,
+                "classification": classification,
+                "market_derived_window": {
+                    "earliest_pick": 136,
+                    "latest_pick": 156,
+                },
+            },
+        )
+    }
 
 
 def _inputs(

@@ -59,6 +59,21 @@ def apply_strategy(
             normalized = "DEF" if position.upper() in {"DEF", "DST"} else position.upper()
             user_position_counts[normalized] = user_position_counts.get(normalized, 0) + 1
 
+    user_pick_count = sum(pick.draft_slot == inputs.draft_slot for pick in inputs.completed_picks)
+    remaining = max(0, inputs.draft_rounds - user_pick_count)
+    unfilled = tuple(
+        position
+        for position in profile.roster_completion_guard.required_positions
+        if user_position_counts.get(position, 0) == 0
+    )
+    completion_required = bool(unfilled) and remaining <= len(unfilled)
+    reserved_deadlines = _reserved_position_deadlines(
+        inputs,
+        profile,
+        user_position_counts,
+        mandatory_reservations=len(unfilled),
+    )
+
     target_evaluations: list[TargetEvaluation] = []
     target_by_id: dict[str, tuple[TargetProfile, TargetEvaluation]] = {}
     primary_states: dict[str, str] = {}
@@ -88,6 +103,8 @@ def apply_strategy(
             drafted_by_others,
             primary_states,
             market_context,
+            latest_feasible_acquisition_pick=reserved_deadlines.get(target.player_name),
+            user_next_scheduled_pick=raw.turn_context.user_next_scheduled_pick,
         )
         raw_rank = candidate.recommendation_rank if candidate else None
         deficit = round(leader_score - candidate.recommendation_score, 6) if candidate else None
@@ -108,6 +125,7 @@ def apply_strategy(
             raw_score_deficit=deficit,
             raw_rank_displacement=displacement,
             within_cost_ceiling=within_cost,
+            latest_feasible_acquisition_pick=reserved_deadlines.get(target.player_name),
             reason=reason,
         )
         target_evaluations.append(evaluation)
@@ -115,14 +133,6 @@ def apply_strategy(
         if canonical_id:
             target_by_id[canonical_id] = (target, evaluation)
 
-    user_pick_count = sum(pick.draft_slot == inputs.draft_slot for pick in inputs.completed_picks)
-    remaining = max(0, inputs.draft_rounds - user_pick_count)
-    unfilled = tuple(
-        position
-        for position in profile.roster_completion_guard.required_positions
-        if user_position_counts.get(position, 0) == 0
-    )
-    completion_required = bool(unfilled) and remaining <= len(unfilled)
     evaluations_by_name = {evaluation.player_name: evaluation for evaluation in target_evaluations}
     reserved_states: list[ReservedPositionTargetState] = []
     active_reserved_by_position: dict[str, str] = {}
@@ -130,7 +140,13 @@ def apply_strategy(
         evaluation = evaluations_by_name[reserved.target_player_name]
         active = bool(
             evaluation.canonical_player_id
-            and evaluation.state in {"too_early", "in_window", "deferred_pending_market_context"}
+            and evaluation.state
+            in {
+                "too_early",
+                "in_window",
+                "last_reasonable_chance",
+                "deferred_pending_market_context",
+            }
         )
         suppression = active and reserved.suppress_other_candidates_while_active
         if suppression:
@@ -143,6 +159,7 @@ def apply_strategy(
                 target_state=evaluation.state,
                 active=active,
                 suppression_applied=suppression,
+                latest_feasible_acquisition_pick=evaluation.latest_feasible_acquisition_pick,
                 reason=(
                     "Configured target remains reserved; other candidates at the position "
                     "are suppressed"
@@ -156,7 +173,9 @@ def apply_strategy(
     for raw_candidate in raw_candidates:
         target_pair = target_by_id.get(raw_candidate.canonical_player_id)
         eligible = True
-        promotion: Literal["eligible_target_within_cost", "no_promotion"] = "no_promotion"
+        promotion: Literal[
+            "reserved_position_deadline", "eligible_target_within_cost", "no_promotion"
+        ] = "no_promotion"
         reasons: list[str] = []
         if target_pair:
             target, evaluation = target_pair
@@ -168,6 +187,9 @@ def apply_strategy(
             }:
                 eligible = False
                 reasons.append("target_hard_gate")
+            elif evaluation.state == "last_reasonable_chance":
+                promotion = "reserved_position_deadline"
+                reasons.append("reserved_position_last_reasonable_chance")
             elif evaluation.state == "in_window" and evaluation.within_cost_ceiling:
                 promotion = "eligible_target_within_cost"
                 reasons.append("target_promoted_within_raw_cost")
@@ -228,7 +250,7 @@ def apply_strategy(
         )
         key = (
             0 if eligible else 1,
-            0 if promotion == "eligible_target_within_cost" else 1,
+            0 if promotion in {"reserved_position_deadline", "eligible_target_within_cost"} else 1,
             _utility_order(utility),
             raw_candidate.recommendation_rank,
             raw_candidate.canonical_player_id,
@@ -451,6 +473,9 @@ def _target_state(
     drafted_by_others: set[str],
     primary_states: dict[str, str],
     market_context: dict[str, Any] | None,
+    *,
+    latest_feasible_acquisition_pick: int | None = None,
+    user_next_scheduled_pick: int | None = None,
 ) -> tuple[TargetState, str]:
     if canonical_id in drafted_by_user:
         return "acquired_by_user", "Target was selected by the user"
@@ -481,5 +506,49 @@ def _target_state(
         if player_market is None or player_market.get("overall_adp") is None:
             return "deferred_pending_market_context", "Compatible player ADP is required"
         if player_market.get("classification") in {"too_early", "market_reach"}:
+            if (
+                latest_feasible_acquisition_pick is not None
+                and user_next_scheduled_pick is not None
+                and user_next_scheduled_pick >= latest_feasible_acquisition_pick
+            ):
+                return (
+                    "last_reasonable_chance",
+                    "Roster feasibility moved the action point earlier than the market-derived "
+                    "window; this is the last selection available before mandatory roster "
+                    "completion reservations",
+                )
             return "too_early", "Current pick precedes the market-derived target window"
     return "in_window", "Current round is inside the effective target window"
+
+
+def _reserved_position_deadlines(
+    inputs: RecommendationInputs,
+    profile: StrategyProfile,
+    user_position_counts: dict[str, int],
+    *,
+    mandatory_reservations: int,
+) -> dict[str, int]:
+    available_pick_index = inputs.draft_rounds - mandatory_reservations
+    if available_pick_index < 1:
+        return {}
+    deadline_pick = _snake_slot_pick(
+        available_pick_index,
+        inputs.draft_slot,
+        inputs.team_count,
+    )
+    required = {
+        "QB": inputs.roster.qb,
+        "RB": inputs.roster.rb,
+        "WR": inputs.roster.wr,
+        "TE": inputs.roster.te,
+    }
+    return {
+        reserved.target_player_name: deadline_pick
+        for reserved in profile.reserved_position_targets
+        if user_position_counts.get(reserved.position, 0) < required[reserved.position]
+    }
+
+
+def _snake_slot_pick(round_no: int, draft_slot: int, team_count: int) -> int:
+    within_round = draft_slot if round_no % 2 else team_count - draft_slot + 1
+    return (round_no - 1) * team_count + within_round

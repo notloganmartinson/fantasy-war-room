@@ -10,6 +10,7 @@ WindowMode = Literal["hard_gate", "promotion_only"]
 TargetState = Literal[
     "too_early",
     "in_window",
+    "last_reasonable_chance",
     "deferred_pending_market_context",
     "acquired_by_user",
     "selected_by_opponent",
@@ -130,6 +131,7 @@ class TargetEvaluation(StrategyModel):
     raw_score_deficit: float | None = None
     raw_rank_displacement: int | None = None
     within_cost_ceiling: bool = False
+    latest_feasible_acquisition_pick: int | None = None
     reason: str
 
 
@@ -140,7 +142,9 @@ class StrategyCandidate(StrategyModel):
     raw_rank: int
     raw_score: float
     eligible: bool
-    target_promotion_class: Literal["eligible_target_within_cost", "no_promotion"]
+    target_promotion_class: Literal[
+        "reserved_position_deadline", "eligible_target_within_cost", "no_promotion"
+    ]
     positional_utility_class: Literal[
         "normal_depth",
         "te2_starter_or_flex",
@@ -170,6 +174,7 @@ class ReservedPositionTargetState(StrategyModel):
     target_state: TargetState
     active: bool
     suppression_applied: bool
+    latest_feasible_acquisition_pick: int | None = None
     reason: str
 
 
