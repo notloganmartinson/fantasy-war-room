@@ -65,7 +65,7 @@ def create_server(service: DraftCopilotService) -> MCPServer:
     if service.strategy_profile is not None:
 
         @server.tool(annotations=READ_ONLY, structured_output=False)
-        def get_draft_strategy(as_of: str | None = None) -> CallToolResult:
+        async def get_draft_strategy(as_of: str | None = None) -> CallToolResult:
             """Read the active strategy profile, target states, and completion constraints."""
             return _call(
                 "fwr.mcp.draft-strategy/1.0",
@@ -73,17 +73,17 @@ def create_server(service: DraftCopilotService) -> MCPServer:
             )
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def get_draft_state(as_of: str | None = None) -> CallToolResult:
+    async def get_draft_state(as_of: str | None = None) -> CallToolResult:
         """Read the selected draft's coherent turn state and recent picks."""
         return _call("fwr.mcp.draft-state/1.0", lambda: service.get_draft_state(as_of=as_of))
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def get_my_roster(as_of: str | None = None) -> CallToolResult:
+    async def get_my_roster(as_of: str | None = None) -> CallToolResult:
         """Read the user's projection-aware offensive lineup, bench, and vacancies."""
         return _call("fwr.mcp.roster/1.0", lambda: service.get_my_roster(as_of=as_of))
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def get_available_players(
+    async def get_available_players(
         position: str | None = None,
         limit: int = 20,
         as_of: str | None = None,
@@ -95,7 +95,7 @@ def create_server(service: DraftCopilotService) -> MCPServer:
         )
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def recommend_pick(
+    async def recommend_pick(
         model: str = "trusted-board-1.1",
         source: str = "parlay-play-hybrid",
         limit: int = 10,
@@ -108,7 +108,7 @@ def create_server(service: DraftCopilotService) -> MCPServer:
         )
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def compare_players(players: list[str], as_of: str | None = None) -> CallToolResult:
+    async def compare_players(players: list[str], as_of: str | None = None) -> CallToolResult:
         """Compare exactly two canonical IDs or deterministic player-name matches."""
         return _call(
             "fwr.mcp.player-comparison/1.0",
@@ -116,7 +116,7 @@ def create_server(service: DraftCopilotService) -> MCPServer:
         )
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
-    def get_position_outlook(
+    async def get_position_outlook(
         position: str | None = None, as_of: str | None = None
     ) -> CallToolResult:
         """Read deterministic depth, scarcity, vacancy, and trusted-tier evidence."""
