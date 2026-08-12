@@ -23,6 +23,7 @@ from fantasy_war_room.decision.models import (
 )
 from fantasy_war_room.decision.recommend import recommend
 from fantasy_war_room.errors import InputError
+from fantasy_war_room.market import build_market_context, build_opponent_demand
 from fantasy_war_room.mcp.repository import McpReadRepository
 from fantasy_war_room.mcp.server import create_server
 from fantasy_war_room.mcp.service import DraftCopilotService
@@ -96,6 +97,56 @@ def test_brown_hard_gate_and_provisional_promotion_ceiling() -> None:
     assert brown_candidate.raw_score == next(
         row.recommendation_score for row in raw_two.candidates if row.player_name == "Chase Brown"
     )
+
+
+def test_market_context_is_descriptive_deterministic_and_limit_independent() -> None:
+    inputs = _inputs().model_copy(update={"draft_slot": 2})
+    raw = recommend(inputs, "trusted-board-1.1")
+    kyler = next(
+        player for player in inputs.projected_players if player.player_name == "Kyler Murray"
+    )
+    adp = {
+        "snapshot": {"adp_snapshot_id": "adp-1", "source": "local-adp"},
+        "entries": {kyler.canonical_player_id: {"overall_adp": 65.0}},
+    }
+    schedule = {"snapshot": {"schedule_snapshot_id": "schedule-1"}, "entries": {"ARI": 8}}
+    first = build_market_context(
+        raw,
+        inputs,
+        draft_snapshot_id="draft-1",
+        adp=adp,
+        schedule=schedule,
+        manual_windows={kyler.canonical_player_id: (None, None)},
+    )
+    second = build_market_context(
+        raw.model_copy(update={"candidates": tuple(reversed(raw.candidates))}),
+        inputs,
+        draft_snapshot_id="draft-1",
+        adp=adp,
+        schedule=schedule,
+        manual_windows={kyler.canonical_player_id: (None, None)},
+    )
+    by_id = {row.canonical_player_id: row for row in first.players}
+    assert by_id[kyler.canonical_player_id].classification in {"too_early", "market_reach"}
+    assert by_id[kyler.canonical_player_id].overall_adp == 65.0
+    assert "probability" not in first.model_dump_json()
+    assert {row.canonical_player_id: row for row in first.players} == {
+        row.canonical_player_id: row for row in second.players
+    }
+
+
+def test_opponent_demand_handles_zero_intervening_and_is_not_probability() -> None:
+    inputs = _inputs().model_copy(update={"draft_slot": 2})
+    raw = recommend(inputs, "trusted-board-1.1")
+    demand = build_opponent_demand(raw, inputs, draft_snapshot_id="draft-1", adp=None)
+    assert demand.intervening_picks == 1
+    assert sum(demand.position_pressure.values()) == demand.intervening_picks
+    assert "probability" not in demand.model_dump_json()
+    on_clock = inputs.model_copy(update={"draft_slot": 1})
+    on_clock_raw = recommend(on_clock, "trusted-board-1.1")
+    zero = build_opponent_demand(on_clock_raw, on_clock, draft_snapshot_id="draft-1", adp=None)
+    assert zero.intervening_picks == 0
+    assert zero.opponent_details == ()
 
 
 def test_mcbride_round_gate_loveland_fallback_and_kyler_deferred() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from fantasy_war_room.intelligence import (
     reprocess_rankings,
     sync_players,
 )
+from fantasy_war_room.market_imports import import_adp, import_team_schedule
 from fantasy_war_room.repository import IntelligenceRepository, MigrationError
 from fantasy_war_room.services import sync
 
@@ -79,6 +80,92 @@ def player_payload() -> dict[str, dict[str, Any]]:
             "team": "NYG",
         },
     }
+
+
+def test_adp_and_schedule_imports_are_immutable_deduplicated_and_strict(tmp_path: Path) -> None:
+    repository = IntelligenceRepository(tmp_path / "market.duckdb")
+    observed = datetime(2026, 8, 1, tzinfo=UTC)
+    sync_players(
+        PlayerProvider(player_payload()),
+        repository,
+        tmp_path / "cache",
+        force=True,
+        observed_at=observed,
+    )
+    adp_file = tmp_path / "adp.csv"
+    adp_file.write_text(
+        "player_name,position,team,overall_adp,adp_sd,sample_size\n"
+        "Alpha Quarterback,QB,ARI,62.5,3.1,100\nUnknown Player,WR,SEA,80,,\n",
+        encoding="utf-8",
+    )
+    first, created = import_adp(
+        adp_file,
+        repository,
+        source="local-adp",
+        source_version="v1",
+        season="2026",
+        scoring_format="ppr",
+        league_size=10,
+        draft_type="snake",
+        observed_at=observed,
+    )
+    duplicate, duplicate_created = import_adp(
+        adp_file,
+        repository,
+        source="local-adp",
+        source_version="v1",
+        season="2026",
+        scoring_format="ppr",
+        league_size=10,
+        draft_type="snake",
+        observed_at=observed + timedelta(hours=1),
+    )
+    assert created is True and duplicate_created is False
+    assert first.payload_hash == duplicate.payload_hash
+    assert (first.matched_row_count, first.unresolved_row_count, first.ambiguous_row_count) == (
+        1,
+        1,
+        0,
+    )
+    assert (
+        repository.adp_issues(first.adp_snapshot_id)[0].reason
+        == "player absent from current directory"
+    )
+    schedule_file = tmp_path / "schedule.csv"
+    schedule_file.write_text("team,bye_week\nARI,8\nBUF,7\n", encoding="utf-8")
+    schedule, schedule_created = import_team_schedule(
+        schedule_file,
+        repository,
+        source="local-schedule",
+        source_version="v1",
+        season="2026",
+        observed_at=observed,
+    )
+    assert schedule_created is True and schedule.total_row_count == 2
+    with duckdb.connect(str(repository.path)) as connection:
+        assert connection.execute("SELECT count(*) FROM adp_snapshots").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT team, bye_week FROM team_schedule_entries ORDER BY team"
+        ).fetchall() == [("ARI", 8), ("BUF", 7)]
+
+
+def test_adp_import_is_atomic_on_invalid_numeric_row(tmp_path: Path) -> None:
+    repository = IntelligenceRepository(tmp_path / "rollback.duckdb")
+    repository.initialize()
+    path = tmp_path / "bad.csv"
+    path.write_text("player_name,overall_adp\nSomeone,not-a-number\n", encoding="utf-8")
+    with pytest.raises(InputError, match="invalid numeric"):
+        import_adp(
+            path,
+            repository,
+            source="local-adp",
+            source_version="v1",
+            season="2026",
+            scoring_format="ppr",
+            league_size=10,
+            draft_type="snake",
+        )
+    assert repository.adp_snapshots() == []
 
 
 def test_bulk_player_ingestion_preserves_identity_mapping_and_observations(
@@ -601,6 +688,8 @@ def test_m2_migration_preserves_m1_rows(tmp_path: Path) -> None:
             (6, "m2_ranking_resolution_provenance"),
             (7, "projection_intelligence"),
             (8, "standalone_draft_context"),
+            (9, "immutable_adp_intelligence"),
+            (10, "team_schedule_intelligence"),
         ]
         assert connection.execute("SELECT count(*) FROM player_observations").fetchone() == (0,)
 
@@ -641,7 +730,7 @@ def test_migration_four_upgrades_exact_deployed_m2_schema_and_preserves_rows(
         assert row == ("cp1", observed_at)
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
 
 
 def test_fresh_and_upgraded_player_observation_schemas_are_equivalent(tmp_path: Path) -> None:
@@ -823,7 +912,7 @@ def test_migration_four_succeeds_after_inconsistent_fixture_is_corrected(tmp_pat
 
     IntelligenceRepository(path).initialize()
 
-    assert _migration_versions(path) == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert _migration_versions(path) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     with duckdb.connect(str(path)) as connection:
         assert connection.execute(
             "SELECT observed_at FROM player_observations "

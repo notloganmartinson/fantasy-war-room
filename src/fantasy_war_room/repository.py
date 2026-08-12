@@ -32,6 +32,8 @@ from fantasy_war_room.identity import (
     suffix_insensitive_name,
 )
 from fantasy_war_room.models import (
+    AdpIssue,
+    AdpSnapshot,
     BoardPlayer,
     PlayerDirectorySnapshot,
     PlayerSearchResult,
@@ -40,6 +42,7 @@ from fantasy_war_room.models import (
     RankingIssue,
     RankingSnapshot,
     Snapshot,
+    TeamScheduleSnapshot,
 )
 
 MIGRATION_1 = """
@@ -285,6 +288,49 @@ UPDATE draft_snapshots SET source_league_id = league_id,
  draft_context_type = 'league';
 """
 
+MIGRATION_9 = """
+CREATE TABLE adp_snapshots (
+ adp_snapshot_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL,
+ source_version VARCHAR NOT NULL, season VARCHAR NOT NULL, league_size INTEGER NOT NULL,
+ scoring_format VARCHAR NOT NULL, draft_type VARCHAR NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL, imported_at TIMESTAMPTZ NOT NULL,
+ payload_hash VARCHAR NOT NULL, identity_resolver_version VARCHAR NOT NULL,
+ original_filename VARCHAR NOT NULL, total_row_count INTEGER NOT NULL,
+ matched_row_count INTEGER NOT NULL, unresolved_row_count INTEGER NOT NULL,
+ ambiguous_row_count INTEGER NOT NULL, schema_version VARCHAR NOT NULL
+);
+CREATE TABLE adp_entries (
+ adp_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ canonical_player_id VARCHAR, source_player_name VARCHAR NOT NULL,
+ source_position VARCHAR, source_team VARCHAR, overall_adp DOUBLE NOT NULL,
+ adp_sd DOUBLE, sample_size INTEGER, match_status VARCHAR NOT NULL,
+ match_method VARCHAR, raw_payload JSON NOT NULL,
+ PRIMARY KEY(adp_snapshot_id, source_row_number)
+);
+CREATE TABLE adp_match_issues (
+ adp_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ source_player_name VARCHAR NOT NULL, source_position VARCHAR, source_team VARCHAR,
+ match_status VARCHAR NOT NULL, reason VARCHAR NOT NULL,
+ candidate_player_ids JSON NOT NULL, raw_payload JSON NOT NULL,
+ PRIMARY KEY(adp_snapshot_id, source_row_number)
+);
+"""
+
+MIGRATION_10 = """
+CREATE TABLE team_schedule_snapshots (
+ schedule_snapshot_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL,
+ source_version VARCHAR NOT NULL, season VARCHAR NOT NULL,
+ observed_at TIMESTAMPTZ NOT NULL, imported_at TIMESTAMPTZ NOT NULL,
+ payload_hash VARCHAR NOT NULL, original_filename VARCHAR NOT NULL,
+ total_row_count INTEGER NOT NULL, schema_version VARCHAR NOT NULL
+);
+CREATE TABLE team_schedule_entries (
+ schedule_snapshot_id VARCHAR NOT NULL, team VARCHAR NOT NULL,
+ bye_week INTEGER NOT NULL, raw_payload JSON NOT NULL,
+ PRIMARY KEY(schedule_snapshot_id, team)
+);
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
@@ -294,6 +340,8 @@ MIGRATIONS = (
     (6, "m2_ranking_resolution_provenance", MIGRATION_6),
     (7, "projection_intelligence", MIGRATION_7),
     (8, "standalone_draft_context", MIGRATION_8),
+    (9, "immutable_adp_intelligence", MIGRATION_9),
+    (10, "team_schedule_intelligence", MIGRATION_10),
 )
 
 
@@ -1057,6 +1105,172 @@ class IntelligenceRepository(SnapshotRepository):
                 "SELECT * FROM ranking_snapshots ORDER BY observed_at DESC, ranking_snapshot_id"
             ).fetchall()
         return [RankingSnapshot.from_row(row) for row in rows]
+
+    def insert_adp_snapshot(
+        self, snapshot: AdpSnapshot, entries: list[dict[str, Any]], issues: list[AdpIssue]
+    ) -> bool:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            connection.begin()
+            try:
+                existing = connection.execute(
+                    "SELECT payload_hash FROM adp_snapshots WHERE source=? AND source_version=? "
+                    "AND season=? AND league_size=? AND scoring_format=? AND draft_type=? "
+                    "ORDER BY observed_at DESC, imported_at DESC, adp_snapshot_id DESC LIMIT 1",
+                    [
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                        snapshot.league_size,
+                        snapshot.scoring_format,
+                        snapshot.draft_type,
+                    ],
+                ).fetchone()
+                if existing and str(existing[0]) == snapshot.payload_hash:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "INSERT INTO adp_snapshots VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        snapshot.adp_snapshot_id,
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                        snapshot.league_size,
+                        snapshot.scoring_format,
+                        snapshot.draft_type,
+                        snapshot.observed_at,
+                        snapshot.imported_at,
+                        snapshot.payload_hash,
+                        snapshot.identity_resolver_version,
+                        snapshot.original_filename,
+                        snapshot.total_row_count,
+                        snapshot.matched_row_count,
+                        snapshot.unresolved_row_count,
+                        snapshot.ambiguous_row_count,
+                        snapshot.schema_version,
+                    ],
+                )
+                for entry in entries:
+                    connection.execute(
+                        "INSERT INTO adp_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            snapshot.adp_snapshot_id,
+                            entry["source_row_number"],
+                            entry["canonical_player_id"],
+                            entry["player_name"],
+                            entry.get("position"),
+                            entry.get("team"),
+                            entry["overall_adp"],
+                            entry.get("adp_sd"),
+                            entry.get("sample_size"),
+                            entry["match_status"],
+                            entry.get("match_method"),
+                            json.dumps(entry["raw_payload"], sort_keys=True),
+                        ],
+                    )
+                for issue in issues:
+                    connection.execute(
+                        "INSERT INTO adp_match_issues VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            snapshot.adp_snapshot_id,
+                            issue.source_row_number,
+                            issue.source_player_name,
+                            issue.source_position,
+                            issue.source_team,
+                            issue.match_status,
+                            issue.reason,
+                            json.dumps(issue.candidate_player_ids),
+                            json.dumps(issue.raw_payload, sort_keys=True),
+                        ],
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return True
+
+    def adp_snapshots(self) -> list[AdpSnapshot]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM adp_snapshots ORDER BY observed_at DESC, imported_at DESC, "
+                "adp_snapshot_id"
+            ).fetchall()
+        return [AdpSnapshot.from_row(row) for row in rows]
+
+    def adp_issues(self, snapshot_id: str | None = None) -> list[AdpIssue]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM adp_match_issues WHERE (? IS NULL OR adp_snapshot_id=?) "
+                "ORDER BY adp_snapshot_id, source_row_number",
+                [snapshot_id, snapshot_id],
+            ).fetchall()
+        return [AdpIssue.from_row(row) for row in rows]
+
+    def insert_schedule_snapshot(
+        self, snapshot: TeamScheduleSnapshot, entries: list[dict[str, Any]]
+    ) -> bool:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            connection.begin()
+            try:
+                existing = connection.execute(
+                    "SELECT payload_hash FROM team_schedule_snapshots WHERE source=? "
+                    "AND source_version=? AND season=? "
+                    "ORDER BY observed_at DESC, imported_at DESC, "
+                    "schedule_snapshot_id DESC LIMIT 1",
+                    [
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                    ],
+                ).fetchone()
+                if existing and str(existing[0]) == snapshot.payload_hash:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "INSERT INTO team_schedule_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        snapshot.schedule_snapshot_id,
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.season,
+                        snapshot.observed_at,
+                        snapshot.imported_at,
+                        snapshot.payload_hash,
+                        snapshot.original_filename,
+                        snapshot.total_row_count,
+                        snapshot.schema_version,
+                    ],
+                )
+                for entry in entries:
+                    connection.execute(
+                        "INSERT INTO team_schedule_entries VALUES (?, ?, ?, ?)",
+                        [
+                            snapshot.schedule_snapshot_id,
+                            entry["team"],
+                            entry["bye_week"],
+                            json.dumps(entry["raw_payload"], sort_keys=True),
+                        ],
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return True
+
+    def schedule_snapshots(self) -> list[TeamScheduleSnapshot]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM team_schedule_snapshots "
+                "ORDER BY observed_at DESC, imported_at DESC, "
+                "schedule_snapshot_id"
+            ).fetchall()
+        return [TeamScheduleSnapshot.from_row(row) for row in rows]
 
     def ranking_snapshot_for_reprocessing(
         self, snapshot_id: str

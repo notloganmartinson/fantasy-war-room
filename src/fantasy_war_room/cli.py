@@ -31,6 +31,9 @@ from fantasy_war_room.intelligence import (
     reprocess_rankings,
     sync_players,
 )
+from fantasy_war_room.market_imports import import_adp, import_team_schedule
+from fantasy_war_room.mcp.repository import McpReadRepository
+from fantasy_war_room.mcp.service import DraftCopilotService
 from fantasy_war_room.projections import import_cbs_projections
 from fantasy_war_room.recommendations import build_recommendation
 from fantasy_war_room.rendering import (
@@ -69,11 +72,186 @@ rankings_app = typer.Typer(help="Import and inspect ranking snapshots.")
 projections_app = typer.Typer(help="Import and inspect statistical projection snapshots.")
 drafts_app = typer.Typer(help="Discover Sleeper league and standalone drafts.")
 strategies_app = typer.Typer(help="Inspect and validate strategy profiles.")
+adp_app = typer.Typer(help="Import and inspect immutable ADP snapshots.")
+schedules_app = typer.Typer(help="Import and inspect immutable team schedule snapshots.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
 app.add_typer(drafts_app, name="drafts")
 app.add_typer(strategies_app, name="strategies")
+app.add_typer(adp_app, name="adp")
+app.add_typer(schedules_app, name="schedules")
+
+
+@adp_app.command("import")
+def adp_import(
+    path: Path,
+    source: str = typer.Option(...),
+    source_version: str = typer.Option(..., "--source-version"),
+    season: str = typer.Option("2026"),
+    scoring: str = typer.Option("ppr"),
+    league_size: int = typer.Option(10, "--league-size"),
+    draft_type: str = typer.Option("snake", "--draft-type"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    def operation() -> dict[str, Any]:
+        repository = IntelligenceRepository(load_settings(db_path=db_path).db_path)
+        snapshot, created = import_adp(
+            path,
+            repository,
+            source=source,
+            source_version=source_version,
+            season=season,
+            scoring_format=scoring,
+            league_size=league_size,
+            draft_type=draft_type,
+            observed_at=parse_timestamp(observed_at) if observed_at else None,
+        )
+        return {
+            "created": created,
+            "snapshot": snapshot,
+            "issues": repository.adp_issues(snapshot.adp_snapshot_id),
+        }
+
+    _run(
+        "adp import",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} ADP snapshot "
+            f"{result['snapshot'].adp_snapshot_id}"
+        ),
+    )
+
+
+@adp_app.command("list")
+def adp_list(
+    db_path: Path | None = typer.Option(None), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    _run(
+        "adp list",
+        json_output,
+        lambda: {
+            "snapshots": IntelligenceRepository(
+                load_settings(db_path=db_path).db_path
+            ).adp_snapshots()
+        },
+        lambda result: stdout.print(result),
+    )
+
+
+@adp_app.command("unresolved")
+def adp_unresolved(
+    snapshot_id: str | None = typer.Option(None, "--snapshot-id"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    _run(
+        "adp unresolved",
+        json_output,
+        lambda: {
+            "snapshot_id": snapshot_id,
+            "issues": IntelligenceRepository(load_settings(db_path=db_path).db_path).adp_issues(
+                snapshot_id
+            ),
+        },
+        lambda result: stdout.print(result),
+    )
+
+
+@schedules_app.command("import")
+def schedules_import(
+    path: Path,
+    source: str = typer.Option(...),
+    source_version: str = typer.Option(..., "--source-version"),
+    season: str = typer.Option("2026"),
+    observed_at: str | None = typer.Option(None, "--observed-at"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    def operation() -> dict[str, Any]:
+        snapshot, created = import_team_schedule(
+            path,
+            IntelligenceRepository(load_settings(db_path=db_path).db_path),
+            source=source,
+            source_version=source_version,
+            season=season,
+            observed_at=parse_timestamp(observed_at) if observed_at else None,
+        )
+        return {"created": created, "snapshot": snapshot}
+
+    _run(
+        "schedules import",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"{'Stored' if result['created'] else 'Unchanged'} schedule snapshot "
+            f"{result['snapshot'].schedule_snapshot_id}"
+        ),
+    )
+
+
+@schedules_app.command("list")
+def schedules_list(
+    db_path: Path | None = typer.Option(None), json_output: bool = typer.Option(False, "--json")
+) -> None:
+    _run(
+        "schedules list",
+        json_output,
+        lambda: {
+            "snapshots": IntelligenceRepository(
+                load_settings(db_path=db_path).db_path
+            ).schedule_snapshots()
+        },
+        lambda result: stdout.print(result),
+    )
+
+
+def _local_copilot(
+    draft_id: str, draft_slot: int | None, db_path: Path | None
+) -> DraftCopilotService:
+    settings = load_settings(db_path=db_path)
+    return DraftCopilotService(
+        McpReadRepository(settings.db_path),
+        draft_id=draft_id,
+        sleeper_user_id=settings.sleeper_user_id,
+        draft_slot=draft_slot,
+        strategy_profile=load_strategy_profile("logan-ppr-2flex-1.0"),
+    )
+
+
+@app.command("market-context")
+def market_context_command(
+    draft_id: str = typer.Option(..., "--draft-id"),
+    draft_slot: int | None = typer.Option(None, "--draft-slot"),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    _run(
+        "market-context",
+        json_output,
+        lambda: _local_copilot(draft_id, draft_slot, db_path).get_market_context(as_of=as_of)[0],
+        lambda result: stdout.print(result),
+    )
+
+
+@app.command("opponent-demand")
+def opponent_demand_command(
+    draft_id: str = typer.Option(..., "--draft-id"),
+    draft_slot: int | None = typer.Option(None, "--draft-slot"),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    _run(
+        "opponent-demand",
+        json_output,
+        lambda: _local_copilot(draft_id, draft_slot, db_path).get_opponent_demand(as_of=as_of)[0],
+        lambda result: stdout.print(result),
+    )
 
 
 @strategies_app.command("list")

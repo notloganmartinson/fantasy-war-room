@@ -4,13 +4,20 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import duckdb
 
 from fantasy_war_room.database import with_database_lock_retry
 from fantasy_war_room.decision.models import RecommendationInputs, RecommendationProvenance
 from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
-from fantasy_war_room.models import ProjectionSnapshot, RankingSnapshot, Snapshot
+from fantasy_war_room.models import (
+    AdpSnapshot,
+    ProjectionSnapshot,
+    RankingSnapshot,
+    Snapshot,
+    TeamScheduleSnapshot,
+)
 from fantasy_war_room.repository import (
     MIGRATIONS,
     _canonical_hash,
@@ -44,6 +51,30 @@ class McpReadRepository:
         projection_source: str = "cbs",
         sleep: Callable[[float], None] | None = None,
     ) -> tuple[RecommendationInputs, Snapshot]:
+        inputs, snapshot, _, _ = self.read_with_market(
+            at,
+            draft_id=draft_id,
+            sleeper_user_id=sleeper_user_id,
+            draft_slot=draft_slot,
+            ranking_source=ranking_source,
+            projection_source=projection_source,
+            sleep=sleep,
+        )
+        return inputs, snapshot
+
+    def read_with_market(
+        self,
+        at: datetime | None,
+        *,
+        draft_id: str,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+        ranking_source: str,
+        projection_source: str = "cbs",
+        adp_source: str | None = None,
+        schedule_source: str | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> tuple[RecommendationInputs, Snapshot, dict[str, object] | None, dict[str, object] | None]:
         if not self.path.exists():
             raise NotFoundError(
                 "Fantasy War Room database does not exist",
@@ -51,7 +82,9 @@ class McpReadRepository:
                 code="database_not_found",
             )
 
-        def operation() -> tuple[RecommendationInputs, Snapshot]:
+        def operation() -> tuple[
+            RecommendationInputs, Snapshot, dict[str, object] | None, dict[str, object] | None
+        ]:
             connection: duckdb.DuckDBPyConnection | None = None
             try:
                 connection = duckdb.connect(str(self.path), read_only=True)
@@ -67,8 +100,16 @@ class McpReadRepository:
                     ranking_source=ranking_source,
                     projection_source=projection_source,
                 )
+                adp, schedule = _market_rows(
+                    connection,
+                    decision_at,
+                    inputs,
+                    season=str(snapshot.draft.get("season") or ""),
+                    adp_source=adp_source,
+                    schedule_source=schedule_source,
+                )
                 connection.commit()
-                return inputs, snapshot
+                return inputs, snapshot, adp, schedule
             except Exception:
                 if connection is not None:
                     with suppress(Exception):
@@ -81,6 +122,81 @@ class McpReadRepository:
         if sleep is None:
             return with_database_lock_retry(operation)
         return with_database_lock_retry(operation, sleep=sleep)
+
+
+def _market_rows(
+    connection: duckdb.DuckDBPyConnection,
+    at: datetime,
+    inputs: RecommendationInputs,
+    *,
+    season: str,
+    adp_source: str | None,
+    schedule_source: str | None,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    scoring = {
+        "full_ppr": "ppr",
+        "half_ppr": "half_ppr",
+        "standard": "standard",
+        "custom": "custom",
+    }[inputs.scoring_format]
+    query = (
+        "SELECT * FROM adp_snapshots WHERE observed_at<=? AND imported_at<=? "
+        "AND season=? AND league_size=? AND scoring_format=? AND draft_type=? "
+    )
+    params: list[object] = [
+        at,
+        at,
+        season,
+        inputs.team_count,
+        scoring,
+        inputs.draft_type,
+    ]
+    if adp_source:
+        query += "AND source=? "
+        params.append(adp_source)
+    query += "ORDER BY observed_at DESC, imported_at DESC, adp_snapshot_id DESC LIMIT 1"
+    row = connection.execute(query, params).fetchone()
+    adp = None
+    if row:
+        snapshot = AdpSnapshot.from_row(row)
+        entries = connection.execute(
+            "SELECT canonical_player_id, overall_adp, adp_sd, sample_size "
+            "FROM adp_entries WHERE adp_snapshot_id=? AND match_status='matched' "
+            "ORDER BY source_row_number",
+            [snapshot.adp_snapshot_id],
+        ).fetchall()
+        adp = {
+            "snapshot": snapshot.model_dump(mode="json"),
+            "entries": {
+                str(r[0]): {"overall_adp": r[1], "adp_sd": r[2], "sample_size": r[3]}
+                for r in entries
+            },
+        }
+    schedule_query = (
+        "SELECT * FROM team_schedule_snapshots WHERE observed_at<=? AND imported_at<=? "
+        "AND season=? "
+    )
+    schedule_params: list[object] = [at, at, season]
+    if schedule_source:
+        schedule_query += "AND source=? "
+        schedule_params.append(schedule_source)
+    schedule_query += (
+        "ORDER BY observed_at DESC, imported_at DESC, schedule_snapshot_id DESC LIMIT 1"
+    )
+    schedule_row = connection.execute(schedule_query, schedule_params).fetchone()
+    schedule = None
+    if schedule_row:
+        schedule_snapshot = TeamScheduleSnapshot.from_row(schedule_row)
+        entries = connection.execute(
+            "SELECT team, bye_week FROM team_schedule_entries "
+            "WHERE schedule_snapshot_id=? ORDER BY team",
+            [schedule_snapshot.schedule_snapshot_id],
+        ).fetchall()
+        schedule = {
+            "snapshot": schedule_snapshot.model_dump(mode="json"),
+            "entries": {str(team): int(bye) for team, bye in entries},
+        }
+    return cast(dict[str, object] | None, adp), cast(dict[str, object] | None, schedule)
 
 
 def _validate_schema(connection: duckdb.DuckDBPyConnection) -> None:

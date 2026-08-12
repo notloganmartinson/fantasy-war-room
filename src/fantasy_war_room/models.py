@@ -162,6 +162,105 @@ class RankingIssue(BaseModel):
         )
 
 
+class AdpSnapshot(BaseModel):
+    schema_version: str = "1.0"
+    adp_snapshot_id: str
+    source: str
+    source_version: str
+    season: str
+    league_size: int
+    scoring_format: str
+    draft_type: str
+    observed_at: datetime
+    imported_at: datetime
+    payload_hash: str
+    identity_resolver_version: str
+    original_filename: str
+    total_row_count: int
+    matched_row_count: int
+    unresolved_row_count: int
+    ambiguous_row_count: int
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> AdpSnapshot:
+        return cls(
+            adp_snapshot_id=row[0],
+            source=row[1],
+            source_version=row[2],
+            season=row[3],
+            league_size=row[4],
+            scoring_format=row[5],
+            draft_type=row[6],
+            observed_at=row[7],
+            imported_at=row[8],
+            payload_hash=row[9],
+            identity_resolver_version=row[10],
+            original_filename=row[11],
+            total_row_count=row[12],
+            matched_row_count=row[13],
+            unresolved_row_count=row[14],
+            ambiguous_row_count=row[15],
+            schema_version=row[16],
+        )
+
+
+class AdpIssue(BaseModel):
+    schema_version: str = "1.0"
+    adp_snapshot_id: str
+    source_row_number: int
+    source_player_name: str
+    source_position: str | None
+    source_team: str | None
+    match_status: str
+    reason: str
+    candidate_player_ids: list[str]
+    raw_payload: dict[str, Any]
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> AdpIssue:
+        import json
+
+        return cls(
+            adp_snapshot_id=row[0],
+            source_row_number=row[1],
+            source_player_name=row[2],
+            source_position=row[3],
+            source_team=row[4],
+            match_status=row[5],
+            reason=row[6],
+            candidate_player_ids=json.loads(row[7]),
+            raw_payload=json.loads(row[8]),
+        )
+
+
+class TeamScheduleSnapshot(BaseModel):
+    schema_version: str = "1.0"
+    schedule_snapshot_id: str
+    source: str
+    source_version: str
+    season: str
+    observed_at: datetime
+    imported_at: datetime
+    payload_hash: str
+    original_filename: str
+    total_row_count: int
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> TeamScheduleSnapshot:
+        return cls(
+            schedule_snapshot_id=row[0],
+            source=row[1],
+            source_version=row[2],
+            season=row[3],
+            observed_at=row[4],
+            imported_at=row[5],
+            payload_hash=row[6],
+            original_filename=row[7],
+            total_row_count=row[8],
+            schema_version=row[9],
+        )
+
+
 class ProjectionSnapshot(BaseModel):
     schema_version: str = "1.0"
     projection_snapshot_id: str

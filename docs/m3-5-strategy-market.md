@@ -2,7 +2,7 @@
 
 ## Status
 
-M3.5A is implemented. M3.5B remains approved design and is not implemented.
+M3.5A and M3.5B Part 1 are implemented. Live news and calibrated simulation remain deferred.
 
 M3.5A adds a deterministic, configurable strategy layer after
 `trusted-board-1.1`, followed by immutable ADP intelligence and market timing.
@@ -64,7 +64,7 @@ RecommendationInputs
   -> preserved raw result + strategy-adjusted result
 ```
 
-The deferred M3.5B design would supply additional immutable inputs to that same
+M3.5B Part 1 supplies additional immutable inputs to that same
 strategy adjustment:
 
 ```text
@@ -73,6 +73,30 @@ ADP observations + draft state
   -> target-window refinement
   -> strategy-adjusted recommendation
 ```
+
+ADP uses migration 9 (`adp_snapshots`, `adp_entries`, and `adp_match_issues`).
+Team byes use migration 10 (`team_schedule_snapshots` and
+`team_schedule_entries`). Both are append-only local CSV imports. Historical
+selection requires both `observed_at` and `imported_at` at or before the cutoff.
+ADP compatibility includes source, season, league size, scoring, and draft type.
+
+`market-context-1.0` reports exact pick arithmetic, ADP differences, manual,
+market-derived, and effective windows, plus bye context and limitations. Its
+descriptive market window is ADP plus or minus one league round, not a survival
+estimate. Hard manual gates remain authoritative.
+
+`opponent-demand-1.0` enumerates intervening snake picks and fills fixed starter
+vacancies, then FLEX vacancies from RB/WR/TE, then bench depth. ADP, trusted
+rank, and canonical ID provide stable ordering. The result is deterministic
+roster-need pressure, not probability or manager-intent inference.
+
+```text
+ADP required: player_name,overall_adp
+ADP optional: position,team,adp_sd,sample_size
+Schedule required: team,bye_week
+```
+
+No 2026 ADP or bye rows are bundled or fabricated.
 
 ## Non-negotiable compatibility rules
 

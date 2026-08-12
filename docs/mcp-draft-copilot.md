@@ -8,8 +8,9 @@ The implemented baseline exposes six tools: `get_draft_state`,
 `get_my_roster`, `get_available_players`, `recommend_pick`,
 `compare_players`, and `get_position_outlook`. Implemented M3.5A adds optional
 strategy-aware startup, dynamic profile instructions, strategy-adjusted
-`recommend_pick` output, and `get_draft_strategy`. Market-context tools remain
-deferred M3.5B design in `docs/m3-5-strategy-market.md`.
+`recommend_pick` output, and `get_draft_strategy`. M3.5B Part 1 adds read-only
+`get_market_context` and `get_opponent_demand` with coherent ADP and schedule
+provenance.
 
 ## Goal
 
@@ -50,6 +51,11 @@ Each tool call:
 The server never retains a DuckDB connection, cursor, transaction, or database
 handle between calls. Every attempt follows one open/read-transaction/close
 cycle, including failed attempts.
+
+Market-aware calls select draft, ranking, projection, compatible ADP, and team
+schedule snapshots inside that transaction. Missing compatible ADP returns
+explicit `no_compatible_market_context` classifications and manual-window
+fallback; another source or format is never borrowed silently.
 
 The server does not call `IntelligenceRepository.initialize()`, run migrations,
 or use a repository method that may write. `McpReadRepository` opens DuckDB in

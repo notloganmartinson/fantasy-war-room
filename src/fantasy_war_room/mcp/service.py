@@ -13,6 +13,7 @@ from fantasy_war_room.decision.models import (
 from fantasy_war_room.decision.recommend import recommend
 from fantasy_war_room.errors import InputError, NotFoundError
 from fantasy_war_room.identity import alias_targets, normalize_name, strict_name
+from fantasy_war_room.market import build_market_context, build_opponent_demand
 from fantasy_war_room.mcp.repository import McpReadRepository
 from fantasy_war_room.models import Snapshot
 from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_compatibility
@@ -34,6 +35,8 @@ class DraftCopilotService:
         default_source: str = "parlay-play-hybrid",
         default_model: RecommendationModelVersion = "trusted-board-1.1",
         strategy_profile: StrategyProfile | None = None,
+        default_adp_source: str = "local-adp",
+        default_schedule_source: str = "local-schedule",
     ) -> None:
         self.repository = repository
         self.draft_id = draft_id
@@ -42,6 +45,8 @@ class DraftCopilotService:
         self.default_source = default_source
         self.default_model = default_model
         self.strategy_profile = strategy_profile
+        self.default_adp_source = default_adp_source
+        self.default_schedule_source = default_schedule_source
 
     def recommend_pick(
         self,
@@ -51,27 +56,52 @@ class DraftCopilotService:
         limit: int,
         as_of: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        result, snapshot, inputs = self._context(model=model, source=source, as_of=as_of)
+        result, snapshot, inputs, market, demand = self._market_context(
+            model=model, source=source, as_of=as_of
+        )
         if self.strategy_profile is not None:
             adjusted = limit_strategy_result(
-                apply_strategy(result, inputs, self.strategy_profile), limit
+                apply_strategy(
+                    result,
+                    inputs,
+                    self.strategy_profile,
+                    market_context=market.model_dump(mode="json")
+                    if market.adp_snapshot_id
+                    else None,
+                ),
+                limit,
             )
             data = adjusted.model_dump(mode="json")
         else:
             data = result.model_dump(mode="json")
             data["candidates"] = data["candidates"][:limit]
         data["draft"] = _draft_identity(snapshot)
-        return data, _provenance(result)
+        data["market_context"] = market.model_dump(mode="json")
+        data["opponent_demand"] = demand.model_dump(mode="json")
+        return data, _market_provenance(result, market)
+
+    def get_market_context(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+        result, _, _, market, _ = self._market_context(model=None, source=None, as_of=as_of)
+        return market.model_dump(mode="json"), _market_provenance(result, market)
+
+    def get_opponent_demand(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+        result, _, _, market, demand = self._market_context(model=None, source=None, as_of=as_of)
+        return demand.model_dump(mode="json"), _market_provenance(result, market)
 
     def get_draft_strategy(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         if self.strategy_profile is None:
             raise InputError("strategy_not_configured", "No MCP strategy profile is configured")
-        result, _, inputs = self._context(
+        result, _, inputs, market, demand = self._market_context(
             model=self.strategy_profile.required_raw_model,
             source=self.strategy_profile.required_ranking_source,
             as_of=as_of,
         )
-        adjusted = apply_strategy(result, inputs, self.strategy_profile)
+        adjusted = apply_strategy(
+            result,
+            inputs,
+            self.strategy_profile,
+            market_context=market.model_dump(mode="json") if market.adp_snapshot_id else None,
+        )
         return {
             "profile": self.strategy_profile.model_dump(mode="json"),
             "profile_hash": profile_hash(self.strategy_profile),
@@ -81,12 +111,14 @@ class DraftCopilotService:
                 target.model_dump(mode="json") for target in adjusted.reserved_position_targets
             ],
             "value_summary": adjusted.value_summary.model_dump(mode="json"),
+            "market_context": market.model_dump(mode="json"),
+            "opponent_demand": demand.model_dump(mode="json"),
             "roster_completion_required": adjusted.roster_completion_required,
             "actionable": adjusted.actionable,
             "directive": adjusted.directive.model_dump(mode="json") if adjusted.directive else None,
             "remaining_user_selections": adjusted.remaining_user_selections,
             "unfilled_required_positions": adjusted.unfilled_required_positions,
-        }, _provenance(result)
+        }, _market_provenance(result, market)
 
     def get_draft_state(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         result, snapshot, inputs = self._context(model=None, source=None, as_of=as_of)
@@ -331,6 +363,54 @@ class DraftCopilotService:
             validate_strategy_compatibility(inputs, self.strategy_profile, raw_model=selected_model)
         return recommend(inputs, selected_model), snapshot, inputs
 
+    def _market_context(
+        self, *, model: RecommendationModelVersion | None, source: str | None, as_of: str | None
+    ) -> tuple[RecommendationResult, Snapshot, Any, Any, Any]:
+        at = _decision_time(as_of)
+        inputs, snapshot, adp, schedule = self.repository.read_with_market(
+            at,
+            draft_id=self.draft_id,
+            sleeper_user_id=self.sleeper_user_id,
+            draft_slot=self.draft_slot,
+            ranking_source=source or self.default_source,
+            adp_source=self.default_adp_source,
+            schedule_source=self.default_schedule_source,
+        )
+        selected_model = model or self.default_model
+        if self.strategy_profile is not None:
+            validate_strategy_compatibility(inputs, self.strategy_profile, raw_model=selected_model)
+        result = recommend(inputs, selected_model)
+        player_by_name = {
+            normalize_name(player.player_name): player.canonical_player_id
+            for player in inputs.projected_players
+        }
+        windows: dict[str, tuple[int | None, int | None]] = {}
+        if self.strategy_profile:
+            for target in self.strategy_profile.targets:
+                player_id = player_by_name.get(normalize_name(target.player_name))
+                if player_id:
+                    earliest = (
+                        (target.earliest_round - 1) * inputs.team_count + 1
+                        if target.earliest_round
+                        else None
+                    )
+                    latest = (
+                        target.latest_round * inputs.team_count if target.latest_round else None
+                    )
+                    windows[player_id] = (earliest, latest)
+        market = build_market_context(
+            result,
+            inputs,
+            draft_snapshot_id=snapshot.snapshot_id,
+            adp=cast(Any, adp),
+            schedule=cast(Any, schedule),
+            manual_windows=windows,
+        )
+        demand = build_opponent_demand(
+            result, inputs, draft_snapshot_id=snapshot.snapshot_id, adp=cast(Any, adp)
+        )
+        return result, snapshot, inputs, market, demand
+
     def _inputs(self, as_of: str | None, source: str | None) -> tuple[Any, Snapshot]:
         at = _decision_time(as_of)
         return self.repository.read(
@@ -372,6 +452,16 @@ def _provenance(result: RecommendationResult) -> dict[str, Any]:
         **result.provenance.model_dump(mode="json"),
         "decision_at": result.decision_at.isoformat(),
         "model_specification": result.model_specification.model_dump(mode="json"),
+    }
+
+
+def _market_provenance(result: RecommendationResult, market: Any) -> dict[str, Any]:
+    return {
+        **_provenance(result),
+        "adp_snapshot_id": market.adp_snapshot_id,
+        "schedule_snapshot_id": market.schedule_snapshot_id,
+        "market_context_model_version": market.model_version,
+        "opponent_demand_model_version": "opponent-demand-1.0",
     }
 
 

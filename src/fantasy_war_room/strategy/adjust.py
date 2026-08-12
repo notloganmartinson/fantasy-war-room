@@ -469,4 +469,17 @@ def _target_state(
         return "too_early", "Current round is before the configured earliest round"
     if target.latest_round is not None and round_no > target.latest_round:
         return "window_expired", "Current round is after the configured latest round"
+    if target.deferred_until_market_context and market_context is not None:
+        player_market = next(
+            (
+                row
+                for row in market_context.get("players", ())
+                if row.get("canonical_player_id") == canonical_id
+            ),
+            None,
+        )
+        if player_market is None or player_market.get("overall_adp") is None:
+            return "deferred_pending_market_context", "Compatible player ADP is required"
+        if player_market.get("classification") in {"too_early", "market_reach"}:
+            return "too_early", "Current pick precedes the market-derived target window"
     return "in_window", "Current round is inside the effective target window"

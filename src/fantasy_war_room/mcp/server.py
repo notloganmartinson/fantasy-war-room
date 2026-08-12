@@ -38,6 +38,10 @@ overwrite FWR facts with memory. Distinguish deterministic findings from strateg
 When recommending, explain why now, closest alternatives, what to prioritize afterward, and tier
 or scarcity concerns. Do not claim a player will survive or invent availability probabilities.
 MCP does not synchronize; if state is stale, tell the user to check fwr watch.
+Market context is descriptive, never a survival probability. Call get_market_context before
+calling a target early, aligned, or late, and get_opponent_demand before claiming positional
+pressure between picks. Bye concentration is context, not a prohibition. Never say a player is
+likely to survive; no calibrated model exists. Live news remains outside FWR.
 """
 
 
@@ -52,14 +56,14 @@ def create_server(service: DraftCopilotService) -> MCPServer:
             "acceptable and must not cause a lesser-TE reach. Kyler Murray is the exclusive "
             "planned QB target while that reservation is active: do not make another QB the "
             "actionable choice. Kyler remains deferred until market context exists and must not "
-            "be promoted merely because he is reserved. TE2 is value-sensitive: distinguish a "
+            "be promoted merely because he is reserved; compatible ADP may refine his "
+            "effective window. TE2 is value-sensitive: distinguish a "
             "starter/FLEX improvement, meaningful bench value, and ordinary redundant depth. "
             "TE3 remains prohibited. Raw and strategy-adjusted recommendations are distinct. "
             "Respect QB2 demotion, TE3 prohibition, and "
             "the K/DEF completion directive. When actionable=false, do not recommend the "
             "embedded raw offensive leader; follow roster_completion_required without "
-            "inventing a specific K or DEF. Do not invent market context; M3.5A has none.\n\n"
-            + instructions
+            "inventing a specific K or DEF.\n\n" + instructions
         )
     server = MCPServer(
         "Fantasy War Room Draft Copilot",
@@ -128,6 +132,18 @@ def create_server(service: DraftCopilotService) -> MCPServer:
         return _call(
             "fwr.mcp.position-outlook/1.0",
             lambda: service.get_position_outlook(position=_position(position), as_of=as_of),
+        )
+
+    @server.tool(annotations=READ_ONLY, structured_output=False)
+    async def get_market_context(as_of: str | None = None) -> CallToolResult:
+        """Read deterministic ADP timing and bye context from coherent local snapshots."""
+        return _call("fwr.mcp.market-context/1.0", lambda: service.get_market_context(as_of=as_of))
+
+    @server.tool(annotations=READ_ONLY, structured_output=False)
+    async def get_opponent_demand(as_of: str | None = None) -> CallToolResult:
+        """Read deterministic positional pressure over intervening snake picks."""
+        return _call(
+            "fwr.mcp.opponent-demand/1.0", lambda: service.get_opponent_demand(as_of=as_of)
         )
 
     return server
@@ -232,6 +248,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--draft-id", required=True)
     parser.add_argument("--draft-slot", type=int)
     parser.add_argument("--source", default="parlay-play-hybrid")
+    parser.add_argument("--adp-source", default="local-adp")
+    parser.add_argument("--schedule-source", default="local-schedule")
     parser.add_argument(
         "--model",
         default="trusted-board-1.1",
@@ -256,6 +274,8 @@ def main() -> None:
         strategy_profile=(
             load_strategy_profile(selected_strategy) if selected_strategy is not None else None
         ),
+        default_adp_source=args.adp_source,
+        default_schedule_source=args.schedule_source,
     )
     logging.basicConfig(level=logging.WARNING)
     create_server(service).run("stdio")
