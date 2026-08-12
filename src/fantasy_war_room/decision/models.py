@@ -22,6 +22,8 @@ class RosterConfiguration(DecisionModel):
     te: int = Field(ge=0)
     flex: int = Field(ge=0)
     bench: int = Field(default=0, ge=0)
+    k: int = Field(default=0, ge=0)
+    defense: int = Field(default=0, ge=0)
 
 
 class CompletedDraftPick(DecisionModel):
@@ -30,6 +32,7 @@ class CompletedDraftPick(DecisionModel):
     draft_slot: int | None = Field(default=None, gt=0)
     canonical_player_id: str | None = None
     sleeper_player_id: str | None = None
+    position: str | None = None
 
 
 class RecommendationPlayerInput(DecisionModel):
@@ -92,6 +95,10 @@ class RecommendationInputs(DecisionModel):
     expert_rankings: tuple[ExpertRankingInput, ...]
     provenance: RecommendationProvenance
     unresolved_roster_player_ids: tuple[str, ...] = ()
+    sport: Literal["nfl"] = "nfl"
+    league_type: Literal["redraft", "keeper", "dynasty", "unknown"] = "unknown"
+    keeper_status: Literal["non_keeper", "keeper", "unknown"] = "unknown"
+    scoring_format: Literal["full_ppr", "half_ppr", "standard", "custom"] = "full_ppr"
 
 
 class DraftTurnContext(DecisionModel):

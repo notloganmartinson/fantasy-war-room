@@ -4,6 +4,13 @@
 
 Implemented as the first local read-only MCP draft copilot.
 
+The implemented baseline exposes six tools: `get_draft_state`,
+`get_my_roster`, `get_available_players`, `recommend_pick`,
+`compare_players`, and `get_position_outlook`. Implemented M3.5A adds optional
+strategy-aware startup, dynamic profile instructions, strategy-adjusted
+`recommend_pick` output, and `get_draft_strategy`. Market-context tools remain
+deferred M3.5B design in `docs/m3-5-strategy-market.md`.
+
 ## Goal
 
 Expose Fantasy War Room's synchronized, deterministic draft intelligence to a
@@ -44,11 +51,10 @@ The server never retains a DuckDB connection, cursor, transaction, or database
 handle between calls. Every attempt follows one open/read-transaction/close
 cycle, including failed attempts.
 
-The server must not call `IntelligenceRepository.initialize()`, run migrations,
-or use a repository method that may write. The existing recommendation input
-selection will be factored into connection-taking read helpers shared by the
-CLI repository path and a new read-only MCP repository. That keeps selection
-semantics identical without weakening the server's read-only guarantee.
+The server does not call `IntelligenceRepository.initialize()`, run migrations,
+or use a repository method that may write. `McpReadRepository` opens DuckDB in
+read-only mode and reuses the repository's existing recommendation-selection
+helpers so CLI and MCP retain the same input semantics.
 
 The server has no provider adapters in its dependency graph. Network clients
 are neither constructed nor accepted by the MCP service. Startup and tool
@@ -62,7 +68,7 @@ retry policy:
 
 - retry only errors positively identified as database file-lock contention;
 - close any partially opened connection before retrying;
-- use bounded exponential backoff with short deterministic delays (proposed
+- use bounded exponential backoff with short deterministic delays
   `50 ms`, `100 ms`, `200 ms`, `400 ms`, `800 ms`; no jitter);
 - MCP returns stable `database_busy` after all attempts are exhausted; and
 - watcher polling logs a transient lock conflict to stderr and retries the
@@ -88,15 +94,12 @@ implemented unless practical testing proves it necessary.
 
 ## MCP library
 
-Use the official Python MCP SDK and its `FastMCP` server API. It provides stdio
-transport, typed tool schemas derived from Python/Pydantic models, structured
-results, tool annotations, and the initialization `instructions` field. During
-implementation, select a release that supports Python 3.12 and the required
-structured-result APIs, then pin it exactly in `pyproject.toml` and `uv.lock`.
-The implemented and tested release is `mcp==2.0.0`; an unconstrained dependency
-or major-range-only constraint is not acceptable.
+The implementation uses the official Python MCP SDK's `MCPServer` API for
+stdio transport, typed tool schemas, structured results, tool annotations, and
+the initialization `instructions` field. The implemented release is pinned as
+`mcp==2.0.0` in project metadata and the lockfile.
 
-Every tool is annotated read-only and non-destructive. The implementation will
+Every tool is annotated read-only and non-destructive. The implementation does
 not expose generic SQL, file, resource-write, sync, or provider tools.
 
 Codex supports local stdio servers, reads server-wide MCP instructions, and can
@@ -104,19 +107,16 @@ register a stdio command with `codex mcp add`; its MCP configuration also
 supports an explicit command, argument list, environment, working directory,
 timeouts, and tool policies. See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp/).
 
-## Proposed package layout
+## Implemented package layout
 
 ```text
 src/fantasy_war_room/
   mcp/
     __init__.py
-    server.py          # FastMCP declaration, instructions, stdio entry point
-    settings.py        # MCP startup configuration and validation
+    server.py          # MCPServer declaration, argument parsing, instructions, stdio entry point
     service.py         # tool-oriented, read-only application facade
     repository.py      # read-only transaction and context queries
-    models.py          # explicit versioned request/response models
-    outlook.py         # pure, versioned position-outlook classification
-    errors.py          # stable FWR-to-MCP error mapping
+    models.py          # stable MCP envelope and error models
 ```
 
 Existing modules retain their responsibilities:
@@ -126,7 +126,7 @@ Existing modules retain their responsibilities:
 - shared repository query helpers select immutable inputs for both CLI and MCP.
 - provider adapters and synchronization services remain outside the MCP path.
 
-Add a console entry point:
+The project exposes this console entry point:
 
 ```toml
 [project.scripts]
@@ -147,20 +147,27 @@ fwr-mcp \
   [--draft-slot SLOT] \
   [--source parlay-play-hybrid] \
   [--model trusted-board-1.1] \
+  [--strategy logan-ppr-2flex-1.0] \
   [--database PATH]
 ```
 
-Defaults and precedence follow the application invariant: CLI, environment,
-user config, then defaults. Proposed environment names are
-`FWR_MCP_DRAFT_ID`, `FWR_MCP_DRAFT_SLOT`, `FWR_MCP_SOURCE`,
-`FWR_MCP_MODEL`, and the existing database-path setting. The default source is
-`parlay-play-hybrid`; the default model is `trusted-board-1.1` for draft
-testing. Explicit tool arguments to `recommend_pick` may override source and
-model for that call.
+The implemented startup parser requires `--draft-id`; accepts optional
+`--draft-slot`, `--source`, `--model`, and `--database`; and defaults source to
+`parlay-play-hybrid` and model to `trusted-board-1.1`. The database path falls
+back through the application's existing `FWR_DB_PATH`, user configuration, and
+XDG default behavior. MCP-specific environment variables are not implemented
+in v1. Explicit `recommend_pick` arguments may override source and model for
+that call.
 
 `draft_id` is always required. Draft-slot resolution uses the existing M3
 precedence; an explicit startup slot is sufficient for a standalone mock
 without user ownership.
+
+`--strategy` also resolves through `FWR_MCP_STRATEGY`, then the application's
+active `strategy` setting. The initial profile requires draft slot 7,
+`trusted-board-1.1`, and `parlay-play-hybrid`; conflicting contexts return a
+structured error. Without a strategy, the original six-tool contract is
+unchanged.
 
 The database path continues to use XDG configuration and `platformdirs`, not
 the process working directory. An absolute project path in the Codex
@@ -418,6 +425,22 @@ depth label rather than an invented conclusion.
 analyst tier. Null tiers on Rotoworld fallback players are missing data: they
 are never treated as a tier match, a boundary, or evidence of a tier drop.
 
+### `get_draft_strategy`
+
+This tool is registered only when MCP starts with an active strategy. It
+returns schema `fwr.mcp.draft-strategy/1.0` with the normalized profile,
+profile hash, temporal status, derived target states, remaining user picks,
+and K/DEF completion status. It is read-only and uses the same coherent
+recommendation context as `recommend_pick`.
+
+With a strategy active, `recommend_pick` preserves the complete unchanged raw
+`trusted-board-1.1` result and separately returns the deterministic adjusted
+ordering. No second weighted strategy score is created. If the K/DEF guard
+fires, it returns `actionable=false`, a null `actionable_choice`, empty
+actionable candidates, and `roster_completion_required`; Codex must not treat
+the embedded raw leader as a recommendation. Requested limits are applied only
+to the adjusted presentation rows after full strategy evaluation.
+
 ## Server instructions for Codex
 
 The MCP initialization `instructions` field begins with the most important
@@ -502,6 +525,8 @@ args = [
   "fwr-mcp",
   "--draft-id",
   "DRAFT_ID",
+  "--strategy",
+  "logan-ppr-2flex-1.0",
 ]
 startup_timeout_sec = 10
 tool_timeout_sec = 30
@@ -514,6 +539,7 @@ enabled_tools = [
   "recommend_pick",
   "compare_players",
   "get_position_outlook",
+  "get_draft_strategy",
 ]
 ```
 
@@ -534,12 +560,13 @@ codex mcp add fantasy-war-room -- \
 That global option is documented as opt-in, not the draft-night default.
 `codex mcp list` verifies registration; `/mcp` verifies the active server in a
 Codex session. The config uses `writes` approval behavior plus an allowlist of
-exactly the six read-only tools. `required = false` prevents initialization
+the six baseline tools plus `get_draft_strategy`. `required = false` prevents initialization
 failure from blocking the project session. These forms follow the official
-Codex MCP documentation. Acceptance tests execute both the project-scoped
-configuration and command shape before the README presents them as supported.
+Codex MCP documentation. The stdio entry point is integration-tested outside
+the repository working directory; project-scoped Codex configuration remains a
+documented operator setup rather than an application parser feature.
 
-## Test plan
+## Implemented test coverage
 
 ### Pure and schema tests
 
@@ -621,17 +648,15 @@ the guarantees.
   while retaining the stable structured FWR error envelope;
 - assert stdout contains only MCP protocol traffic and logs use stderr;
 - launch with a working directory outside the repository;
-- run via the exact proposed `uv run --project ... fwr-mcp` command;
-- load the preferred project-scoped config with exactly six enabled tools,
-  `default_tools_approval_mode = "writes"`, and a non-required server;
+- run via the implemented `uv run --project ... fwr-mcp` command;
 - verify clean shutdown and useful startup/tool timeouts.
 
 All existing M1, M2, projection, ranking, draft ingestion, and recommendation
 tests remain green. Unit and integration tests never use the public internet.
 
-## Acceptance criteria
+## Implemented baseline contract
 
-The first MCP milestone is accepted when:
+The implemented first MCP milestone provides:
 
 1. all six tools return stable, versioned structured results;
 2. every database connection used by MCP is demonstrably read-only;

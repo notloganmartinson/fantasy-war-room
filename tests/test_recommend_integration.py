@@ -260,6 +260,7 @@ def test_unattributed_pick_is_not_assigned_to_slot_one_and_mock_context_is_requi
     context = {
         "league_id": "league-1",
         "season": "2026",
+        "settings": {"type": 0},
         "scoring_settings": SCORING,
         "roster_positions": ROSTER,
     }
@@ -466,6 +467,7 @@ def _fixture(tmp_path: Path) -> IntelligenceRepository:
     context = {
         "league_id": "league-1",
         "season": "2026",
+        "settings": {"type": 0},
         "scoring_settings": SCORING,
         "roster_positions": ROSTER,
     }

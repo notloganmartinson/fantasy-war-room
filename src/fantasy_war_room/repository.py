@@ -1416,6 +1416,8 @@ class IntelligenceRepository(SnapshotRepository):
             )
             roster = _recommendation_roster_configuration(scoring_context)
             team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
+            league_type, keeper_status = _recommendation_league_format(scoring_context)
+            scoring_format = _recommendation_scoring_format(normalized_scoring)
             provider_rows = connection.execute(
                 "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
                 "WHERE provider = 'sleeper' AND first_observed_at <= ? "
@@ -1446,6 +1448,10 @@ class IntelligenceRepository(SnapshotRepository):
             projected_players=projected_players,
             expert_rankings=rankings,
             unresolved_roster_player_ids=unresolved_roster,
+            sport="nfl",
+            league_type=league_type,
+            keeper_status=keeper_status,
+            scoring_format=scoring_format,
             provenance=RecommendationProvenance(
                 draft_snapshot_id=draft_snapshot.snapshot_id,
                 player_snapshot_id=str(player_row[0]),
@@ -1586,6 +1592,41 @@ def _recommendation_draft_settings(snapshot: Snapshot) -> tuple[int, int, str]:
     return team_count, rounds, str(snapshot.draft.get("type") or "")
 
 
+def _recommendation_league_format(
+    context: dict[str, Any],
+) -> tuple[
+    Literal["redraft", "keeper", "dynasty", "unknown"],
+    Literal["non_keeper", "keeper", "unknown"],
+]:
+    settings = context.get("settings")
+    if not isinstance(settings, dict) or "type" not in settings:
+        return "unknown", "unknown"
+    try:
+        league_type = int(settings["type"])
+    except (TypeError, ValueError):
+        return "unknown", "unknown"
+    values = {0: "redraft", 1: "keeper", 2: "dynasty"}
+    normalized = values.get(league_type)
+    if normalized is None:
+        return "unknown", "unknown"
+    return cast(Literal["redraft", "keeper", "dynasty"], normalized), (
+        "non_keeper" if normalized == "redraft" else "keeper"
+    )
+
+
+def _recommendation_scoring_format(
+    scoring: dict[str, float],
+) -> Literal["full_ppr", "half_ppr", "standard", "custom"]:
+    receptions = scoring.get("rec", 0.0)
+    if receptions == 1.0:
+        return "full_ppr"
+    if receptions == 0.5:
+        return "half_ppr"
+    if receptions == 0.0:
+        return "standard"
+    return "custom"
+
+
 def _resolve_recommendation_draft_slot(
     snapshot: Snapshot, explicit_slot: int | None, sleeper_user_id: str | None
 ) -> int:
@@ -1672,6 +1713,8 @@ def _recommendation_roster_configuration(context: dict[str, Any]) -> RosterConfi
         te=counts["TE"],
         flex=counts["FLEX"],
         bench=counts["BN"],
+        k=sum(str(item).upper() == "K" for item in positions),
+        defense=sum(str(item).upper() in {"DEF", "DST"} for item in positions),
     )
 
 
@@ -1705,6 +1748,12 @@ def _recommendation_picks(
                 ),
                 canonical_player_id=canonical_id,
                 sleeper_player_id=player_id,
+                position=_text(pick.get("position"))
+                or _text(
+                    pick.get("metadata", {}).get("position")
+                    if isinstance(pick.get("metadata"), dict)
+                    else None
+                ),
             )
         )
         if belongs_to_user and player_id and canonical_id is None:

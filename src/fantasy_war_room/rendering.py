@@ -164,6 +164,52 @@ def render_board(players: list[Any]) -> None:
 
 
 def render_recommendation(result: Any) -> None:
+    if hasattr(result, "raw_recommendation"):
+        stdout.print(
+            f"[bold]Strategy:[/bold] {result.strategy_provenance.profile_name} "
+            f"({result.strategy_provenance.profile_hash[:12]})"
+        )
+        if result.roster_completion_required:
+            directive = result.directive
+            stdout.print(
+                "[bold red]Roster completion required:[/bold red] "
+                + ", ".join(result.unfilled_required_positions)
+            )
+            if directive is not None:
+                stdout.print(
+                    f"Remaining selections: {directive.remaining_user_selections}; "
+                    f"required slots: {directive.required_position_count}; "
+                    f"status={directive.boundary_status}; rule={directive.rule_version}."
+                )
+                stdout.print(directive.message)
+            stdout.print("No offensive strategy recommendation is actionable.")
+            return
+        raw = result.raw_recommendation
+        context = raw.turn_context
+        specification = raw.model_specification
+        rows = result.candidates
+        stdout.print(
+            f"[bold]Raw model:[/bold] {specification.recommendation_model_version} "
+            f"weights={specification.weights}"
+        )
+        stdout.print(
+            f"[bold]Round {context.current_round}, pick {context.next_overall_pick}[/bold]"
+        )
+        table = Table(title="Strategy-adjusted draft recommendations")
+        for heading in ("Strategy", "Raw", "Player", "Pos", "Raw score", "Class"):
+            table.add_column(heading)
+        for row in rows:
+            candidate = row.raw_candidate
+            table.add_row(
+                str(row.strategy_rank),
+                str(row.raw_rank),
+                candidate.player_name,
+                candidate.position,
+                f"{row.raw_score:.2f}",
+                f"{row.target_promotion_class}/{row.positional_utility_class}",
+            )
+        stdout.print(table)
+        return
     context = result.turn_context
     specification = result.model_specification
     stdout.print(

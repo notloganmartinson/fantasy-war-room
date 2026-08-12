@@ -15,6 +15,10 @@ from fantasy_war_room.errors import InputError, NotFoundError
 from fantasy_war_room.identity import alias_targets, normalize_name, strict_name
 from fantasy_war_room.mcp.repository import McpReadRepository
 from fantasy_war_room.models import Snapshot
+from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_compatibility
+from fantasy_war_room.strategy.load import profile_hash
+from fantasy_war_room.strategy.models import StrategyProfile
+from fantasy_war_room.strategy.presentation import limit_strategy_result
 
 POSITIONS: tuple[OffensivePosition, ...] = ("QB", "RB", "WR", "TE")
 
@@ -29,6 +33,7 @@ class DraftCopilotService:
         draft_slot: int | None,
         default_source: str = "parlay-play-hybrid",
         default_model: RecommendationModelVersion = "trusted-board-1.1",
+        strategy_profile: StrategyProfile | None = None,
     ) -> None:
         self.repository = repository
         self.draft_id = draft_id
@@ -36,6 +41,7 @@ class DraftCopilotService:
         self.draft_slot = draft_slot
         self.default_source = default_source
         self.default_model = default_model
+        self.strategy_profile = strategy_profile
 
     def recommend_pick(
         self,
@@ -45,11 +51,38 @@ class DraftCopilotService:
         limit: int,
         as_of: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        result, snapshot, _ = self._context(model=model, source=source, as_of=as_of)
-        data = result.model_dump(mode="json")
-        data["candidates"] = data["candidates"][:limit]
+        result, snapshot, inputs = self._context(model=model, source=source, as_of=as_of)
+        if self.strategy_profile is not None:
+            adjusted = limit_strategy_result(
+                apply_strategy(result, inputs, self.strategy_profile), limit
+            )
+            data = adjusted.model_dump(mode="json")
+        else:
+            data = result.model_dump(mode="json")
+            data["candidates"] = data["candidates"][:limit]
         data["draft"] = _draft_identity(snapshot)
         return data, _provenance(result)
+
+    def get_draft_strategy(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+        if self.strategy_profile is None:
+            raise InputError("strategy_not_configured", "No MCP strategy profile is configured")
+        result, _, inputs = self._context(
+            model=self.strategy_profile.required_raw_model,
+            source=self.strategy_profile.required_ranking_source,
+            as_of=as_of,
+        )
+        adjusted = apply_strategy(result, inputs, self.strategy_profile)
+        return {
+            "profile": self.strategy_profile.model_dump(mode="json"),
+            "profile_hash": profile_hash(self.strategy_profile),
+            "profile_temporal_status": "current_explicit_profile",
+            "targets": [target.model_dump(mode="json") for target in adjusted.targets],
+            "roster_completion_required": adjusted.roster_completion_required,
+            "actionable": adjusted.actionable,
+            "directive": adjusted.directive.model_dump(mode="json") if adjusted.directive else None,
+            "remaining_user_selections": adjusted.remaining_user_selections,
+            "unfilled_required_positions": adjusted.unfilled_required_positions,
+        }, _provenance(result)
 
     def get_draft_state(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         result, snapshot, inputs = self._context(model=None, source=None, as_of=as_of)
@@ -289,7 +322,10 @@ class DraftCopilotService:
         as_of: str | None,
     ) -> tuple[RecommendationResult, Snapshot, Any]:
         inputs, snapshot = self._inputs(as_of, source)
-        return recommend(inputs, model or self.default_model), snapshot, inputs
+        selected_model = model or self.default_model
+        if self.strategy_profile is not None:
+            validate_strategy_compatibility(inputs, self.strategy_profile, raw_model=selected_model)
+        return recommend(inputs, selected_model), snapshot, inputs
 
     def _inputs(self, as_of: str | None, source: str | None) -> tuple[Any, Snapshot]:
         at = _decision_time(as_of)

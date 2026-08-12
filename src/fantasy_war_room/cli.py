@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,6 +59,7 @@ from fantasy_war_room.services import (
 from fantasy_war_room.services import sync as sync_draft
 from fantasy_war_room.services import watch as watch_draft
 from fantasy_war_room.sleeper import SleeperClient
+from fantasy_war_room.strategy.load import load_strategy_profile, strategy_directory
 
 app = typer.Typer(
     help="Local-first, time-aware fantasy football decision data.", no_args_is_help=True
@@ -66,10 +68,91 @@ players_app = typer.Typer(help="Synchronize and search the local player director
 rankings_app = typer.Typer(help="Import and inspect ranking snapshots.")
 projections_app = typer.Typer(help="Import and inspect statistical projection snapshots.")
 drafts_app = typer.Typer(help="Discover Sleeper league and standalone drafts.")
+strategies_app = typer.Typer(help="Inspect and validate strategy profiles.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
 app.add_typer(drafts_app, name="drafts")
+app.add_typer(strategies_app, name="strategies")
+
+
+@strategies_app.command("list")
+def strategies_list(json_output: bool = typer.Option(False, "--json")) -> None:
+    """List built-in and installed strategy profiles."""
+
+    def operation() -> dict[str, Any]:
+        names = {"logan-ppr-2flex-1.0"}
+        directory = strategy_directory()
+        if directory.is_dir():
+            names.update(path.stem for path in directory.glob("*.json"))
+        return {"strategies": sorted(names)}
+
+    _run("strategies list", json_output, operation, lambda value: stdout.print(value))
+
+
+@strategies_app.command("show")
+def strategies_show(
+    strategy: str,
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show the normalized effective strategy profile."""
+    _run(
+        "strategies show",
+        json_output,
+        lambda: load_strategy_profile(strategy),
+        lambda value: stdout.print_json(value.model_dump_json()),
+    )
+
+
+@strategies_app.command("validate")
+def strategies_validate(
+    path: Path,
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Validate and normalize a strategy profile file without installing it."""
+    _run(
+        "strategies validate",
+        json_output,
+        lambda: load_strategy_profile(path),
+        lambda value: stdout.print(f"Valid strategy: {value.profile_name}"),
+    )
+
+
+@strategies_app.command("install")
+def strategies_install(
+    path: Path,
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Install a validated strategy profile in the XDG configuration directory."""
+
+    def operation() -> dict[str, Any]:
+        profile = load_strategy_profile(path)
+        directory = strategy_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / f"{profile.profile_name}.json"
+        destination.write_text(
+            json.dumps(profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return {"profile": profile, "path": destination}
+
+    _run("strategies install", json_output, operation, lambda value: stdout.print(value["path"]))
+
+
+@strategies_app.command("active")
+def strategies_active(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Show the active strategy selected by environment or user configuration."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        return {
+            "strategy": settings.strategy,
+            "profile": (
+                load_strategy_profile(settings.strategy) if settings.strategy is not None else None
+            ),
+        }
+
+    _run("strategies active", json_output, operation, lambda value: stdout.print(value))
 
 
 def _run[T](
@@ -688,6 +771,7 @@ def recommend_command(
     draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
     source: str | None = typer.Option(None, "--source"),
     model: RecommendationModelVersion = typer.Option("baseline-1.0", "--model"),
+    strategy: str | None = typer.Option(None, "--strategy"),
     limit: int = typer.Option(10, "--limit", min=1),
     as_of: str | None = typer.Option(None, "--as-of"),
     db_path: Path | None = typer.Option(None, "--db-path"),
@@ -697,6 +781,24 @@ def recommend_command(
 
     def operation() -> Any:
         settings = load_settings(db_path=db_path)
+        selected_strategy = strategy or settings.strategy
+        profile = load_strategy_profile(selected_strategy) if selected_strategy else None
+        selected_model: RecommendationModelVersion = (
+            profile.required_raw_model if profile is not None else model
+        )
+        selected_source = profile.required_ranking_source if profile is not None else source
+        if profile is not None and model != "baseline-1.0" and model != profile.required_raw_model:
+            raise InputError(
+                "strategy_model_conflict",
+                "Explicit recommendation model conflicts with the strategy profile",
+                {"requested": model, "required": profile.required_raw_model},
+            )
+        if profile is not None and source is not None and source != profile.required_ranking_source:
+            raise InputError(
+                "strategy_ranking_source_conflict",
+                "Explicit ranking source conflicts with the strategy profile",
+                {"requested": source, "required": profile.required_ranking_source},
+            )
         at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
         return build_recommendation(
             IntelligenceRepository(settings.db_path),
@@ -705,9 +807,10 @@ def recommend_command(
             league_id=None if draft_id else settings.sleeper_league_id,
             sleeper_user_id=settings.sleeper_user_id,
             draft_slot=draft_slot,
-            ranking_source=source,
-            model_version=model,
+            ranking_source=selected_source,
+            model_version=selected_model,
             limit=limit,
+            strategy_profile=profile,
         )
 
     _run("recommend", json_output, operation, render_recommendation)

@@ -15,10 +15,12 @@ from fantasy_war_room.repository import (
     MIGRATIONS,
     _canonical_hash,
     _recommendation_draft_settings,
+    _recommendation_league_format,
     _recommendation_picks,
     _recommendation_projection_players,
     _recommendation_rankings,
     _recommendation_roster_configuration,
+    _recommendation_scoring_format,
     _resolve_recommendation_draft_slot,
     _select_recommendation_draft,
     _snapshot_from_row,
@@ -197,6 +199,8 @@ def _inputs_from_connection(
     resolved_slot = _resolve_recommendation_draft_slot(draft_snapshot, draft_slot, sleeper_user_id)
     roster = _recommendation_roster_configuration(scoring_context)
     team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
+    league_type, keeper_status = _recommendation_league_format(scoring_context)
+    scoring_format = _recommendation_scoring_format(normalized_scoring)
     provider_rows = connection.execute(
         "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
         "WHERE provider = 'sleeper' AND first_observed_at <= ? ORDER BY provider_player_id",
@@ -226,6 +230,10 @@ def _inputs_from_connection(
         projected_players=projected_players,
         expert_rankings=rankings,
         unresolved_roster_player_ids=unresolved_roster,
+        sport="nfl",
+        league_type=league_type,
+        keeper_status=keeper_status,
+        scoring_format=scoring_format,
         provenance=RecommendationProvenance(
             draft_snapshot_id=draft_snapshot.snapshot_id,
             player_snapshot_id=str(player_row[0]),

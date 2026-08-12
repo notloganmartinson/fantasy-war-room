@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     poll_seconds: float = 2.0
     sleeper_base_url: str = "https://api.sleeper.app/v1"
     http_timeout_seconds: float = 10.0
+    strategy: str | None = None
 
     @field_validator("poll_seconds", "http_timeout_seconds")
     @classmethod
@@ -85,6 +86,7 @@ def save_settings(settings: Settings) -> Path:
         "season": settings.season,
         "db_path": str(settings.db_path),
         "poll_seconds": settings.poll_seconds,
+        "strategy": settings.strategy,
     }
     path.write_text(json.dumps(persisted, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

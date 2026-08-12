@@ -51,6 +51,9 @@ uv run fwr players search "Josh Allen" --as-of 2026-08-01T12:00:00Z
 uv run fwr rankings list
 uv run fwr board --source my-rankings --as-of 2026-08-20T19:00:00Z
 uv run fwr recommend --draft-id 987654 --model trusted-board-1.1
+uv run fwr recommend --draft-id 987654 --draft-slot 7 \
+  --strategy logan-ppr-2flex-1.0
+uv run fwr strategies show logan-ppr-2flex-1.0
 ```
 
 `drafts list` discovers both league-associated and standalone Sleeper drafts for the configured
@@ -101,6 +104,12 @@ transactions, and never synchronizes or contacts a provider. Configure it in a t
 project-scoped `.codex/config.toml` using the template in
 [`docs/mcp-draft-copilot.md`](docs/mcp-draft-copilot.md). The default MCP policy is
 `trusted-board-1.1` with ranking source `parlay-play-hybrid`.
+
+Pass `--strategy logan-ppr-2flex-1.0` to enable the M3.5A deterministic strategy layer.
+The initial profile is compatible with draft slot 7 and preserves the complete raw
+`trusted-board-1.1` result alongside its strategy-adjusted ordering. Strategy-aware MCP
+startup also exposes `get_draft_strategy` and embeds the active profile in fresh-session
+instructions.
 
 ## Development
 

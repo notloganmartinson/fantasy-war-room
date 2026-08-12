@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "profile_name": "logan-ppr-2flex-1.0",
+  "strategy_adjuster_version": "lexicographic-strategy-1.0",
+  "required_raw_model": "trusted-board-1.1",
+  "required_ranking_source": "parlay-play-hybrid",
+  "sport": "nfl",
+  "team_count": 10,
+  "compatible_draft_slots": [7],
+  "draft_type": "snake",
+  "league_type": "redraft",
+  "keeper_status": "non_keeper",
+  "scoring_format": "full_ppr",
+  "qb": 1,
+  "te": 1,
+  "flex": 2,
+  "k": 1,
+  "defense": 1,
+  "allow_wr_wr_start": true,
+  "default_max_target_raw_score_deficit": 5.0,
+  "default_max_target_raw_rank_displacement": 2,
+  "qb2_policy": {
+    "demotion_class": "redundant_qb_depth",
+    "late_round_exception_start_round": null
+  },
+  "te2_policy": {
+    "demotion_class": "redundant_te_depth",
+    "late_round_exception_start_round": null
+  },
+  "te3_prohibited": true,
+  "prefer_rb_wr_over_redundant_qb_te": true,
+  "roster_completion_guard": {
+    "required_positions": ["K", "DEF"],
+    "trigger": "remaining_user_picks_lte_unfilled_required_slots"
+  },
+  "targets": [
+    {
+      "player_name": "Chase Brown",
+      "priority": "high",
+      "role": "primary",
+      "window_mode": "hard_gate",
+      "earliest_round": 2,
+      "preferred_overall_pick": 14,
+      "max_raw_score_deficit": 5.0,
+      "max_raw_rank_displacement": 2
+    },
+    {
+      "player_name": "Trey McBride",
+      "priority": "high",
+      "role": "primary",
+      "window_mode": "hard_gate",
+      "earliest_round": 3,
+      "preferred_overall_pick": 27,
+      "max_raw_score_deficit": 5.0,
+      "max_raw_rank_displacement": 2
+    },
+    {
+      "player_name": "Colston Loveland",
+      "priority": "preferred",
+      "role": "fallback",
+      "fallback_for": "Trey McBride",
+      "window_mode": "promotion_only",
+      "earliest_round": 5,
+      "latest_round": 6,
+      "max_raw_score_deficit": 5.0,
+      "max_raw_rank_displacement": 2
+    },
+    {
+      "player_name": "Kyler Murray",
+      "priority": "preferred",
+      "role": "primary",
+      "window_mode": "promotion_only",
+      "max_raw_score_deficit": 5.0,
+      "max_raw_rank_displacement": 2,
+      "deferred_until_market_context": true
+    }
+  ]
+}
