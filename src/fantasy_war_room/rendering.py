@@ -165,6 +165,16 @@ def render_board(players: list[Any]) -> None:
 
 def render_recommendation(result: Any) -> None:
     context = result.turn_context
+    specification = result.model_specification
+    stdout.print(
+        f"[bold]Model:[/bold] {specification.recommendation_model_version} "
+        f"weights={specification.weights}"
+    )
+    if hasattr(specification, "trusted_rank_transform_version"):
+        stdout.print(
+            f"Trusted transforms: rank={specification.trusted_rank_transform_version}, "
+            f"tier={specification.trusted_tier_transform_version}"
+        )
     status = "ON THE CLOCK" if context.on_the_clock else "waiting"
     stdout.print(
         f"[bold]Round {context.current_round}, pick {context.next_overall_pick}[/bold] "
@@ -186,7 +196,7 @@ def render_recommendation(result: Any) -> None:
     stdout.print(lineup)
 
     table = Table(title="Draft recommendations")
-    for heading in (
+    headings = [
         "#",
         "Player",
         "Pos",
@@ -196,10 +206,14 @@ def render_recommendation(result: Any) -> None:
         "Rank",
         "Scarcity",
         "Δ / roster effect",
-    ):
+    ]
+    trusted_tiers = bool(result.candidates) and hasattr(result.candidates[0], "trusted_tier")
+    if trusted_tiers:
+        headings.insert(7, "Tier")
+    for heading in headings:
         table.add_column(heading)
     for candidate in result.candidates:
-        table.add_row(
+        cells = [
             str(candidate.recommendation_rank),
             candidate.player_name,
             candidate.position,
@@ -208,10 +222,17 @@ def render_recommendation(result: Any) -> None:
             f"({'exact' if candidate.projection_value_kind == 'exact' else 'known'})",
             f"{candidate.vorp:.1f}",
             _display_number(candidate.expert_overall_rank),
-            _display_number(candidate.scarcity.scarcity_points),
-            f"{candidate.roster_effect.starter_projection_delta:.1f} / "
-            f"{candidate.roster_effect.category}",
+        ]
+        if trusted_tiers:
+            cells.append(candidate.trusted_tier or "-")
+        cells.extend(
+            [
+                _display_number(candidate.scarcity.scarcity_points),
+                f"{candidate.roster_effect.starter_projection_delta:.1f} / "
+                f"{candidate.roster_effect.category}",
+            ]
         )
+        table.add_row(*cells)
     stdout.print(table)
     stdout.print("Next-pick probability: unavailable (uncalibrated)")
     for limitation in result.limitations:

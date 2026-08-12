@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 OffensivePosition = Literal["QB", "RB", "WR", "TE"]
 ProjectionValueKind = Literal["exact", "known_component"]
+RecommendationModelVersion = Literal["baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"]
 
 
 class DecisionModel(BaseModel):
@@ -50,6 +51,7 @@ class ExpertRankingInput(DecisionModel):
     canonical_player_id: str
     overall_rank: float | None = None
     positional_rank: str | None = None
+    tier: str | None = None
 
 
 class RecommendationProvenance(DecisionModel):
@@ -239,7 +241,7 @@ class RecommendationBaselines(DecisionModel):
 
 class ModelSpecification(DecisionModel):
     schema_version: str = "1.0"
-    recommendation_model_version: str = "baseline-1.0"
+    recommendation_model_version: RecommendationModelVersion = "baseline-1.0"
     roster_allocator_version: str = "max-projection-offensive-flex-1.0"
     replacement_model_version: str = "structural-starter-demand-1.0"
     scarcity_model_version: str = "one-round-drop-1.0"
@@ -259,3 +261,25 @@ class RecommendationResult(DecisionModel):
     provenance: RecommendationProvenance
     excluded_candidate_counts: dict[str, int]
     limitations: tuple[str, ...]
+
+
+class TrustedBoardCandidateExplanation(CandidateExplanation):
+    schema_version: str = "1.1"
+    trusted_rank_value: float | None
+    trusted_rank_component: ScoreComponent
+    trusted_tier: str | None
+    trusted_tier_value: float | None
+    trusted_tier_component: ScoreComponent
+
+
+class TrustedBoardModelSpecification(ModelSpecification):
+    schema_version: str = "1.1"
+    recommendation_model_version: Literal["trusted-board-1.1"] = "trusted-board-1.1"
+    trusted_rank_transform_version: str = "exponential-half-life-20-1.0"
+    trusted_tier_transform_version: str = "ordinal-s-through-i-1.0"
+
+
+class TrustedBoardRecommendationResult(RecommendationResult):
+    schema_version: str = "1.1"
+    candidates: tuple[TrustedBoardCandidateExplanation, ...]
+    model_specification: TrustedBoardModelSpecification

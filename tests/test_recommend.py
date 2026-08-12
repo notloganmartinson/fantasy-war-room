@@ -18,6 +18,7 @@ from fantasy_war_room.decision.recommend import (
     calculate_expert_percentiles,
     calculate_replacement_levels,
     calculate_scarcity,
+    calculate_trusted_rank_values,
     calculate_turn_context,
     recommend,
 )
@@ -339,6 +340,152 @@ def test_shuffled_inputs_produce_identical_output() -> None:
     assert recommend(original).model_dump(mode="json") == recommend(shuffled).model_dump(
         mode="json"
     )
+
+
+def test_model_selection_changes_only_weights_contributions_scores_and_order() -> None:
+    inputs = _inputs(players=_depth_players(), team_count=2)
+    default = recommend(inputs)
+    explicit_baseline = recommend(inputs, "baseline-1.0")
+    trusted = recommend(inputs, "trusted-board-1.0")
+
+    assert default == explicit_baseline
+    assert explicit_baseline.model_specification.weights == {
+        "vorp": 50.0,
+        "expert_rank": 20.0,
+        "scarcity": 20.0,
+        "roster_fit": 10.0,
+        "next_pick_availability": 0.0,
+    }
+    assert trusted.model_specification.weights == {
+        "vorp": 30.0,
+        "expert_rank": 50.0,
+        "scarcity": 15.0,
+        "roster_fit": 5.0,
+        "next_pick_availability": 0.0,
+    }
+    baseline_by_id = {
+        candidate.canonical_player_id: candidate for candidate in explicit_baseline.candidates
+    }
+    trusted_by_id = {candidate.canonical_player_id: candidate for candidate in trusted.candidates}
+    assert baseline_by_id.keys() == trusted_by_id.keys()
+    for player_id in baseline_by_id:
+        baseline_candidate = baseline_by_id[player_id]
+        trusted_candidate = trusted_by_id[player_id]
+        assert baseline_candidate.projection_baseline == trusted_candidate.projection_baseline
+        assert baseline_candidate.replacement == trusted_candidate.replacement
+        assert baseline_candidate.vorp == trusted_candidate.vorp
+        assert baseline_candidate.expert_percentile == trusted_candidate.expert_percentile
+        assert baseline_candidate.scarcity == trusted_candidate.scarcity
+        assert baseline_candidate.roster_effect == trusted_candidate.roster_effect
+        for component_name in (
+            "vorp_component",
+            "expert_component",
+            "scarcity_component",
+            "roster_fit_component",
+            "next_pick_component",
+        ):
+            baseline_component = getattr(baseline_candidate, component_name)
+            trusted_component = getattr(trusted_candidate, component_name)
+            assert baseline_component.raw_value == trusted_component.raw_value
+            assert baseline_component.normalized_value == trusted_component.normalized_value
+
+
+def test_trusted_board_priority_and_large_value_override() -> None:
+    targets = (
+        _player("board-1", "WR", 220),
+        _player("board-2", "WR", 218),
+        _player("board-3", "WR", 216),
+        _player("large-value", "WR", 350),
+        _player("low-ranked-modest", "WR", 225),
+    )
+    support = (
+        _player("support-qb", "QB", 200),
+        _player("support-rb", "RB", 180),
+        _player("support-te", "TE", 160),
+    )
+    rankings = tuple(
+        ExpertRankingInput(canonical_player_id=player_id, overall_rank=rank)
+        for player_id, rank in (
+            ("board-1", 1),
+            ("board-2", 2),
+            ("board-3", 3),
+            ("large-value", 4),
+            ("low-ranked-modest", 20),
+        )
+    )
+    result = recommend(
+        _inputs(
+            players=(*targets, *support),
+            rankings=rankings,
+            team_count=1,
+            roster=RosterConfiguration(qb=1, rb=1, wr=1, te=1, flex=0),
+        ),
+        "trusted-board-1.0",
+    )
+    order = [candidate.canonical_player_id for candidate in result.candidates]
+    assert order.index("low-ranked-modest") > order.index("board-1")
+    assert order.index("low-ranked-modest") > order.index("board-2")
+    assert order.index("low-ranked-modest") > order.index("board-3")
+    assert order.index("large-value") < order.index("board-3")
+
+
+def test_trusted_board_1_1_rank_transform_tiers_and_policy_behavior() -> None:
+    requested_ranks = (1, 3, 5, 10, 15, 20, 30, 50, 100, 150, 199)
+    transformed = calculate_trusted_rank_values(
+        tuple(
+            ExpertRankingInput(canonical_player_id=f"rank-{rank}", overall_rank=rank)
+            for rank in requested_ranks
+        )
+    )
+    assert [transformed[f"rank-{rank}"] for rank in requested_ranks] == pytest.approx(
+        [2 ** (-(rank - 1) / 20) for rank in requested_ranks],
+        abs=1e-6,
+    )
+
+    players = (
+        _player("higher-board", "WR", 220),
+        _player("nearby-large-value", "WR", 350),
+        _player("lower-board-modest", "WR", 225),
+        _player("fallback", "WR", 210),
+        _player("support-qb", "QB", 200),
+        _player("support-rb", "RB", 180),
+        _player("support-te", "TE", 160),
+    )
+    rankings = (
+        ExpertRankingInput(canonical_player_id="higher-board", overall_rank=9, tier="A"),
+        ExpertRankingInput(canonical_player_id="nearby-large-value", overall_rank=10, tier="A"),
+        ExpertRankingInput(canonical_player_id="lower-board-modest", overall_rank=16, tier="B"),
+        ExpertRankingInput(canonical_player_id="fallback", overall_rank=50),
+    )
+    result = recommend(
+        _inputs(
+            players=players,
+            rankings=rankings,
+            team_count=1,
+            roster=RosterConfiguration(qb=1, rb=1, wr=1, te=1, flex=0),
+        ),
+        "trusted-board-1.1",
+    )
+    assert result.model_specification.recommendation_model_version == "trusted-board-1.1"
+    assert result.model_specification.weights == {
+        "vorp": 25.0,
+        "trusted_rank": 40.0,
+        "scarcity": 15.0,
+        "roster_fit": 5.0,
+        "next_pick_availability": 0.0,
+        "trusted_tier": 15.0,
+    }
+    by_id = {candidate.canonical_player_id: candidate for candidate in result.candidates}
+    assert by_id["higher-board"].trusted_rank_value == pytest.approx(2 ** (-8 / 20))
+    assert by_id["higher-board"].trusted_rank_component.weight == 40.0
+    assert by_id["higher-board"].trusted_tier_value == pytest.approx(8 / 9)
+    assert by_id["lower-board-modest"].trusted_tier_value == pytest.approx(7 / 9)
+    assert by_id["fallback"].trusted_tier is None
+    assert by_id["fallback"].trusted_tier_component.contribution == 0
+    assert "No trusted analyst tier is available." in by_id["fallback"].limitations
+    order = [candidate.canonical_player_id for candidate in result.candidates]
+    assert order.index("higher-board") < order.index("lower-board-modest")
+    assert order.index("nearby-large-value") < order.index("higher-board")
 
 
 @pytest.mark.parametrize(

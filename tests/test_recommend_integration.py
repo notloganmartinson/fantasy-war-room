@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import duckdb
+from mcp import Client
+from mcp.client.session import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
 from fantasy_war_room.cli import app
+from fantasy_war_room.mcp.repository import McpReadRepository
+from fantasy_war_room.mcp.server import create_server
+from fantasy_war_room.mcp.service import DraftCopilotService
 from fantasy_war_room.models import Snapshot
 from fantasy_war_room.repository import IntelligenceRepository
 from fantasy_war_room.services import canonical_hash
@@ -124,6 +132,48 @@ def test_recommend_cli_json_limit_invariance_drafted_exclusion_and_determinism(
     assert configured.exit_code == 0
     assert json.loads(configured.stdout)["data"]["provenance"]["draft_snapshot_id"] == "draft-base"
 
+    trusted_common = [*common, "--model", "trusted-board-1.0"]
+    trusted_one = runner.invoke(app, [*trusted_common, "--limit", "1"])
+    trusted_many = runner.invoke(app, [*trusted_common, "--limit", "20"])
+    trusted_repeated = runner.invoke(app, [*trusted_common, "--limit", "20"])
+    assert trusted_one.exit_code == trusted_many.exit_code == trusted_repeated.exit_code == 0
+    trusted_one_data = json.loads(trusted_one.stdout)["data"]
+    trusted_many_data = json.loads(trusted_many.stdout)["data"]
+    assert trusted_many.stdout == trusted_repeated.stdout
+    assert trusted_many_data["model_specification"]["recommendation_model_version"] == (
+        "trusted-board-1.0"
+    )
+    assert trusted_many_data["model_specification"]["weights"] == {
+        "vorp": 30.0,
+        "expert_rank": 50.0,
+        "scarcity": 15.0,
+        "roster_fit": 5.0,
+        "next_pick_availability": 0.0,
+    }
+    assert (
+        trusted_one_data["candidates"][0]["recommendation_score"]
+        == trusted_many_data["candidates"][0]["recommendation_score"]
+    )
+    assert trusted_one_data["baselines"] == trusted_many_data["baselines"]
+
+    version_1_1 = runner.invoke(app, [*common, "--model", "trusted-board-1.1", "--limit", "20"])
+    assert version_1_1.exit_code == 0
+    version_1_1_data = json.loads(version_1_1.stdout)["data"]
+    assert version_1_1_data["schema_version"] == "1.1"
+    assert version_1_1_data["model_specification"]["recommendation_model_version"] == (
+        "trusted-board-1.1"
+    )
+    assert version_1_1_data["model_specification"]["trusted_rank_transform_version"] == (
+        "exponential-half-life-20-1.0"
+    )
+    ranked_candidate = next(
+        candidate
+        for candidate in version_1_1_data["candidates"]
+        if candidate["canonical_player_id"] == "c-rb-2"
+    )
+    assert ranked_candidate["trusted_tier"] == "A"
+    assert ranked_candidate["trusted_tier_component"]["weight"] == 15.0
+
 
 def test_recommend_human_output_and_standalone_mock_outside_repository_cwd(
     tmp_path: Path,
@@ -153,6 +203,8 @@ def test_recommend_human_output_and_standalone_mock_outside_repository_cwd(
     )
 
     assert result.exit_code == 0, result.output
+    assert "Model: baseline-1.0" in result.stdout
+    assert "expert_rank" in result.stdout
     assert "Round 2, pick 3" in result.stdout
     assert "Draft recommendations" in result.stdout
     assert "VORP" in result.stdout
@@ -258,6 +310,153 @@ def test_unattributed_pick_is_not_assigned_to_slot_one_and_mock_context_is_requi
         ],
     )
     assert json.loads(result.stdout)["error"]["code"] == "mock_scoring_context_required"
+
+
+def test_mcp_read_repository_and_service_are_explicit_as_of_deterministic(
+    tmp_path: Path,
+) -> None:
+    repository = _fixture(tmp_path)
+    at = BASE + timedelta(hours=4)
+    service = DraftCopilotService(
+        McpReadRepository(repository.path),
+        draft_id="draft-1",
+        sleeper_user_id="user-1",
+        draft_slot=1,
+        default_source="rotoworld",
+    )
+
+    first, first_provenance = service.recommend_pick(
+        model=None, source=None, limit=20, as_of=at.isoformat()
+    )
+    repeated, repeated_provenance = service.recommend_pick(
+        model=None, source=None, limit=20, as_of=at.isoformat()
+    )
+
+    assert first == repeated
+    assert first_provenance == repeated_provenance
+    assert first["provenance"]["draft_snapshot_id"] == "draft-base"
+    assert first["model_specification"]["recommendation_model_version"] == ("trusted-board-1.1")
+    candidate_ids = {row["canonical_player_id"] for row in first["candidates"]}
+    assert "c-qb-1" not in candidate_ids
+    assert "c-rb-1" not in candidate_ids
+
+
+def test_mcp_tools_are_read_only_structured_and_domain_errors_set_is_error(
+    tmp_path: Path,
+) -> None:
+    repository = _fixture(tmp_path)
+    at = (BASE + timedelta(hours=4)).isoformat()
+    service = DraftCopilotService(
+        McpReadRepository(repository.path),
+        draft_id="draft-1",
+        sleeper_user_id="user-1",
+        draft_slot=1,
+        default_source="rotoworld",
+    )
+
+    async def exercise() -> None:
+        async with Client(create_server(service)) as client:
+            listing = await client.list_tools()
+            assert {tool.name for tool in listing.tools} == {
+                "get_draft_state",
+                "get_my_roster",
+                "get_available_players",
+                "recommend_pick",
+                "compare_players",
+                "get_position_outlook",
+            }
+            assert all(
+                tool.annotations and tool.annotations.read_only_hint for tool in listing.tools
+            )
+            result = await client.call_tool(
+                "recommend_pick",
+                {"model": "trusted-board-1.1", "source": "rotoworld", "as_of": at},
+            )
+            assert result.is_error is False
+            assert result.structured_content["status"] == "ok"
+            assert result.structured_content["data"]["turn_context"]["current_round"] == 2
+
+        missing = DraftCopilotService(
+            McpReadRepository(repository.path),
+            draft_id="missing",
+            sleeper_user_id="user-1",
+            draft_slot=1,
+            default_source="rotoworld",
+        )
+        async with Client(create_server(missing)) as client:
+            result = await client.call_tool("get_draft_state", {"as_of": at})
+            assert result.is_error is True
+            assert result.structured_content["status"] == "error"
+            assert result.structured_content["error"]["code"] == "draft_not_found"
+
+    asyncio.run(exercise())
+
+
+def test_mcp_roster_comparison_and_position_outlook(tmp_path: Path) -> None:
+    repository = _fixture(tmp_path)
+    at = (BASE + timedelta(hours=4)).isoformat()
+    service = DraftCopilotService(
+        McpReadRepository(repository.path),
+        draft_id="draft-1",
+        sleeper_user_id="user-1",
+        draft_slot=1,
+        default_source="rotoworld",
+    )
+
+    roster, provenance = service.get_my_roster(as_of=at)
+    available, available_provenance = service.get_available_players(
+        position="RB", limit=20, as_of=at
+    )
+    comparison, comparison_provenance = service.compare_players(
+        players=["c-qb-1", "c-rb-2"], as_of=at
+    )
+    outlook, outlook_provenance = service.get_position_outlook(position="RB", as_of=at)
+
+    assert roster["starters"][0]["canonical_player_id"] == "c-qb-1"
+    assert all(row["availability"] == "available" for row in available["players"])
+    assert "c-rb-1" not in {row["canonical_player_id"] for row in available["players"]}
+    assert comparison["players"][0]["availability"] == "drafted"
+    assert comparison["players"][0]["recommendation_score"] is None
+    assert outlook["outlooks"][0]["position"] == "RB"
+    snapshot_ids = {
+        value["draft_snapshot_id"]
+        for value in (provenance, available_provenance, comparison_provenance, outlook_provenance)
+    }
+    assert snapshot_ids == {"draft-base"}
+
+
+def test_mcp_stdio_entrypoint_works_outside_repository_directory(tmp_path: Path) -> None:
+    repository = _fixture(tmp_path / "fixture")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    executable = Path(sys.executable).parent / "fwr-mcp"
+    at = (BASE + timedelta(hours=4)).isoformat()
+
+    async def exercise() -> None:
+        parameters = StdioServerParameters(
+            command=str(executable),
+            args=[
+                "--draft-id",
+                "draft-1",
+                "--draft-slot",
+                "1",
+                "--source",
+                "rotoworld",
+                "--database",
+                str(repository.path),
+            ],
+            cwd=elsewhere,
+        )
+        async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+            initialized = await session.initialize()
+            assert initialized.server_info.name == "Fantasy War Room Draft Copilot"
+            listing = await session.list_tools()
+            assert len(listing.tools) == 6
+            result = await session.call_tool("get_draft_state", {"as_of": at})
+            assert result.is_error is False
+            assert result.structured_content["data"]["draft_snapshot_id"] == "draft-base"
+
+    asyncio.run(exercise())
 
 
 def _fixture(tmp_path: Path) -> IntelligenceRepository:
@@ -425,12 +624,20 @@ def _ranking(
             "3, 3, 0, 0, '1.0', '2.0', ?)",
             [snapshot_id, version, observed_at, imported_at, snapshot_id, reprocessed_from],
         )
-        for row_number, canonical_id in enumerate(("c-rb-2", "c-wr-2", "c-qb-2"), 1):
+        ranked = (("c-rb-2", "A"), ("c-wr-2", "B"), ("c-qb-2", "S"))
+        for row_number, (canonical_id, tier) in enumerate(ranked, 1):
             connection.execute(
                 "INSERT INTO ranking_entries VALUES "
                 "(?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, "
-                "'matched', '{}', 'strict_identity')",
-                [snapshot_id, row_number, canonical_id, canonical_id, row_number],
+                "'matched', ?, 'strict_identity')",
+                [
+                    snapshot_id,
+                    row_number,
+                    canonical_id,
+                    canonical_id,
+                    row_number,
+                    json.dumps({"tier": tier}),
+                ],
             )
 
 

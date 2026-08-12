@@ -57,3 +57,13 @@ class NotFoundError(FwrError):
         code: str = "not_found",
     ) -> None:
         super().__init__(code, message, ExitCode.NOT_FOUND, details)
+
+
+class DatabaseBusyError(FwrError):
+    def __init__(self, details: dict[str, Any] | None = None) -> None:
+        super().__init__(
+            "database_busy",
+            "The local database is busy; retry after the other Fantasy War Room process finishes",
+            ExitCode.UNEXPECTED,
+            details,
+        )

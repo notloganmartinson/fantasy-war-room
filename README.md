@@ -2,7 +2,8 @@
 
 Fantasy War Room is a local-first CLI that records immutable Sleeper draft and player-directory
 snapshots in DuckDB, imports versioned ranking data, and reconstructs an available-player board
-as of a timezone-aware timestamp. It does not recommend which player to draft.
+as of a timezone-aware timestamp. Its deterministic recommendation engine can also serve a
+read-only local MCP draft copilot for Codex CLI.
 
 ## Install and configure
 
@@ -49,6 +50,7 @@ uv run fwr players sync
 uv run fwr players search "Josh Allen" --as-of 2026-08-01T12:00:00Z
 uv run fwr rankings list
 uv run fwr board --source my-rankings --as-of 2026-08-20T19:00:00Z
+uv run fwr recommend --draft-id 987654 --model trusted-board-1.1
 ```
 
 `drafts list` discovers both league-associated and standalone Sleeper drafts for the configured
@@ -85,6 +87,20 @@ command.
 
 Exit codes are: `0` success, `1` unexpected failure, `2` invalid input, `3` configuration
 failure, `4` Sleeper/network failure, and `5` resource not found.
+
+## Local MCP draft copilot
+
+Keep synchronization in a separate terminal:
+
+```console
+uv run fwr watch --draft-id DRAFT_ID --scoring-context-league-id LEAGUE_ID
+```
+
+The MCP server requires an explicit draft ID, reads DuckDB with short-lived read-only
+transactions, and never synchronizes or contacts a provider. Configure it in a trusted
+project-scoped `.codex/config.toml` using the template in
+[`docs/mcp-draft-copilot.md`](docs/mcp-draft-copilot.md). The default MCP policy is
+`trusted-board-1.1` with ranking source `parlay-play-hybrid`.
 
 ## Development
 

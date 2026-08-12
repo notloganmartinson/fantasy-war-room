@@ -16,6 +16,7 @@ from fantasy_war_room.config import (
     load_settings,
     save_settings,
 )
+from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import (
     ConfigurationError,
     ExitCode,
@@ -686,6 +687,7 @@ def recommend_command(
     draft_id: str | None = typer.Option(None, "--draft-id"),
     draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
     source: str | None = typer.Option(None, "--source"),
+    model: RecommendationModelVersion = typer.Option("baseline-1.0", "--model"),
     limit: int = typer.Option(10, "--limit", min=1),
     as_of: str | None = typer.Option(None, "--as-of"),
     db_path: Path | None = typer.Option(None, "--db-path"),
@@ -704,6 +706,7 @@ def recommend_command(
             sleeper_user_id=settings.sleeper_user_id,
             draft_slot=draft_slot,
             ranking_source=source,
+            model_version=model,
             limit=limit,
         )
 

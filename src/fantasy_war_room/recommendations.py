@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fantasy_war_room.decision.models import RecommendationResult
+from fantasy_war_room.decision.models import RecommendationModelVersion, RecommendationResult
 from fantasy_war_room.decision.recommend import recommend
 from fantasy_war_room.errors import InputError
 from fantasy_war_room.repository import IntelligenceRepository
@@ -18,8 +18,9 @@ def build_recommendation(
     draft_slot: int | None,
     ranking_source: str | None,
     limit: int,
+    model_version: RecommendationModelVersion = "baseline-1.0",
 ) -> RecommendationResult:
-    """Select immutable local inputs, run baseline-1.0, then limit presentation."""
+    """Select immutable local inputs, run the chosen policy, then limit presentation."""
     inputs = repository.recommendation_inputs(
         at,
         draft_id=draft_id,
@@ -28,7 +29,7 @@ def build_recommendation(
         draft_slot=draft_slot,
         ranking_source=ranking_source,
     )
-    result = recommend(inputs)
+    result = recommend(inputs, model_version)
     if not result.candidates:
         raise InputError(
             "insufficient_projection_depth",

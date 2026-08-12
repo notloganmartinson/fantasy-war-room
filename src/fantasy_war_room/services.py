@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
+from fantasy_war_room.database import with_database_lock_retry
+from fantasy_war_room.errors import (
+    ConfigurationError,
+    DatabaseBusyError,
+    InputError,
+    NotFoundError,
+)
 from fantasy_war_room.models import DraftSummary, LeagueSummary, Snapshot
 from fantasy_war_room.repository import SnapshotRepository
 from fantasy_war_room.sleeper import SleeperProvider
+
+LOGGER = logging.getLogger(__name__)
 
 
 def canonical_hash(value: Any) -> str:
@@ -221,11 +230,29 @@ def _watch_exact_draft(
         polls += 1
         snapshot = _build_draft_snapshot(*context, draft, picks)
         if snapshot.payload_hash != last_hash:
-            created = repository.insert(snapshot)
+            created = _persist_watched_snapshot(repository, snapshot, poll_seconds, sleep)
             if created and on_snapshot is not None:
                 on_snapshot(snapshot)
             last_hash = snapshot.payload_hash
         if max_polls is None or polls < max_polls:
+            sleep(poll_seconds)
+
+
+def _persist_watched_snapshot(
+    repository: SnapshotRepository,
+    snapshot: Snapshot,
+    poll_seconds: float,
+    sleep: Callable[[float], None],
+) -> bool:
+    while True:
+        try:
+            return with_database_lock_retry(lambda: repository.insert(snapshot), sleep=sleep)
+        except DatabaseBusyError:
+            LOGGER.warning(
+                "DuckDB remains busy; retaining draft %s state %s for retry",
+                snapshot.draft_id,
+                snapshot.payload_hash,
+            )
             sleep(poll_seconds)
 
 

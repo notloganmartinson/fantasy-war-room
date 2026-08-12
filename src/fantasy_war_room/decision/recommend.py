@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Literal, cast
 
 from fantasy_war_room.decision.models import (
     BaselineSelection,
@@ -16,26 +17,54 @@ from fantasy_war_room.decision.models import (
     ProjectionValueKind,
     RecommendationBaselines,
     RecommendationInputs,
+    RecommendationModelVersion,
     RecommendationPlayerInput,
     RecommendationResult,
     ReplacementLevel,
     RosterAllocation,
     RosterEffect,
     ScoreComponent,
+    TrustedBoardCandidateExplanation,
+    TrustedBoardModelSpecification,
+    TrustedBoardRecommendationResult,
 )
 from fantasy_war_room.errors import InputError
 
 POSITIONS: tuple[OffensivePosition, ...] = ("QB", "RB", "WR", "TE")
 FLEX_POSITIONS: tuple[OffensivePosition, ...] = ("RB", "WR", "TE")
-VORP_WEIGHT = 50.0
-EXPERT_RANK_WEIGHT = 20.0
-SCARCITY_WEIGHT = 20.0
-ROSTER_FIT_WEIGHT = 10.0
-NEXT_PICK_AVAILABILITY_WEIGHT = 0.0
 
 
-def recommend(inputs: RecommendationInputs) -> RecommendationResult:
-    """Produce baseline-1.0 solely from the supplied immutable inputs."""
+@dataclass(frozen=True)
+class RecommendationPolicy:
+    model_version: RecommendationModelVersion
+    vorp_weight: float
+    expert_rank_weight: float
+    scarcity_weight: float
+    roster_fit_weight: float
+    next_pick_availability_weight: float = 0.0
+    trusted_tier_weight: float = 0.0
+    nonlinear_trusted_rank: bool = False
+
+
+BASELINE_POLICY = RecommendationPolicy("baseline-1.0", 50.0, 20.0, 20.0, 10.0)
+TRUSTED_BOARD_POLICY = RecommendationPolicy("trusted-board-1.0", 30.0, 50.0, 15.0, 5.0)
+TRUSTED_BOARD_1_1_POLICY = RecommendationPolicy(
+    "trusted-board-1.1",
+    25.0,
+    40.0,
+    15.0,
+    5.0,
+    trusted_tier_weight=15.0,
+    nonlinear_trusted_rank=True,
+)
+
+
+def recommend(
+    inputs: RecommendationInputs,
+    model_version: RecommendationModelVersion = "baseline-1.0",
+) -> RecommendationResult:
+    """Produce a versioned recommendation solely from supplied immutable inputs."""
+    policy = _recommendation_policy(model_version)
     _validate_inputs(inputs)
     turn = calculate_turn_context(inputs)
     players = {player.canonical_player_id: player for player in inputs.projected_players}
@@ -67,7 +96,11 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
     replacements = calculate_replacement_levels(inputs)
     replacement_by_position = {level.position: level for level in replacements}
     rankings = {ranking.canonical_player_id: ranking for ranking in inputs.expert_rankings}
-    expert_percentiles = calculate_expert_percentiles(inputs.expert_rankings)
+    expert_percentiles = (
+        calculate_trusted_rank_values(inputs.expert_rankings)
+        if policy.nonlinear_trusted_rank
+        else calculate_expert_percentiles(inputs.expert_rankings)
+    )
 
     available = [
         player
@@ -111,6 +144,8 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
                 "scarcity": scarcity,
                 "ranking": ranking,
                 "expert_percentile": expert_percentiles.get(player.canonical_player_id),
+                "trusted_tier": ranking.tier if ranking else None,
+                "trusted_tier_value": _trusted_tier_value(ranking.tier if ranking else None),
                 "roster_effect": roster_effect,
             }
         )
@@ -143,16 +178,21 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
         expert_value = row["expert_percentile"] or 0.0
         scarcity_value = scarcity_percentiles.get(player_id, 0.0)
         components = {
-            "vorp": _component(row["vorp"], vorp_value, VORP_WEIGHT),
-            "expert": _component(row["expert_percentile"], expert_value, EXPERT_RANK_WEIGHT),
+            "vorp": _component(row["vorp"], vorp_value, policy.vorp_weight),
+            "expert": _component(row["expert_percentile"], expert_value, policy.expert_rank_weight),
             "scarcity": _component(
-                row["scarcity"].scarcity_points, scarcity_value, SCARCITY_WEIGHT
+                row["scarcity"].scarcity_points, scarcity_value, policy.scarcity_weight
             ),
             "roster": _component(
-                roster_effect.starter_projection_delta, roster_value, ROSTER_FIT_WEIGHT
+                roster_effect.starter_projection_delta, roster_value, policy.roster_fit_weight
             ),
-            "next_pick": _component(None, 0.0, NEXT_PICK_AVAILABILITY_WEIGHT),
+            "next_pick": _component(None, 0.0, policy.next_pick_availability_weight),
         }
+        if policy.trusted_tier_weight:
+            tier_value = row["trusted_tier_value"]
+            components["trusted_tier"] = _component(
+                tier_value, tier_value or 0.0, policy.trusted_tier_weight
+            )
         score = _rounded(sum(component.contribution for component in components.values()))
         scored.append(
             {
@@ -165,7 +205,7 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
 
     scored.sort(key=_candidate_sort_key)
     candidates = tuple(
-        _candidate_explanation(row, rank) for rank, row in enumerate(scored, start=1)
+        _candidate_explanation(row, rank, policy) for rank, row in enumerate(scored, start=1)
     )
     baselines = _baselines(scored)
     limitations = ["Next-pick survival probability is unavailable and contributes zero."]
@@ -173,25 +213,61 @@ def recommend(inputs: RecommendationInputs) -> RecommendationResult:
         limitations.append(
             "Some candidates use league known-component points rather than exact totals."
         )
-    return RecommendationResult(
-        decision_at=inputs.decision_at,
-        turn_context=turn,
-        current_roster=current_roster,
-        replacement_levels=replacements,
-        candidates=candidates,
-        baselines=baselines,
-        model_specification=ModelSpecification(
-            weights={
-                "vorp": VORP_WEIGHT,
-                "expert_rank": EXPERT_RANK_WEIGHT,
-                "scarcity": SCARCITY_WEIGHT,
-                "roster_fit": ROSTER_FIT_WEIGHT,
-                "next_pick_availability": NEXT_PICK_AVAILABILITY_WEIGHT,
-            }
+    weights = {
+        "vorp": policy.vorp_weight,
+        "trusted_rank" if policy.nonlinear_trusted_rank else "expert_rank": (
+            policy.expert_rank_weight
         ),
-        provenance=inputs.provenance,
-        excluded_candidate_counts=excluded,
-        limitations=tuple(limitations),
+        "scarcity": policy.scarcity_weight,
+        "roster_fit": policy.roster_fit_weight,
+        "next_pick_availability": policy.next_pick_availability_weight,
+    }
+    if policy.trusted_tier_weight:
+        weights["trusted_tier"] = policy.trusted_tier_weight
+    common: dict[str, Any] = {
+        "decision_at": inputs.decision_at,
+        "turn_context": turn,
+        "current_roster": current_roster,
+        "replacement_levels": replacements,
+        "baselines": baselines,
+        "provenance": inputs.provenance,
+        "excluded_candidate_counts": excluded,
+        "limitations": tuple(limitations),
+    }
+    if policy.model_version == "trusted-board-1.1":
+        return TrustedBoardRecommendationResult(
+            **common,
+            candidates=cast(tuple[TrustedBoardCandidateExplanation, ...], candidates),
+            model_specification=TrustedBoardModelSpecification(weights=weights),
+        )
+    return RecommendationResult(
+        **common,
+        candidates=candidates,
+        model_specification=ModelSpecification(
+            recommendation_model_version=policy.model_version,
+            weights=weights,
+        ),
+    )
+
+
+def _recommendation_policy(model_version: str) -> RecommendationPolicy:
+    if model_version == BASELINE_POLICY.model_version:
+        return BASELINE_POLICY
+    if model_version == TRUSTED_BOARD_POLICY.model_version:
+        return TRUSTED_BOARD_POLICY
+    if model_version == TRUSTED_BOARD_1_1_POLICY.model_version:
+        return TRUSTED_BOARD_1_1_POLICY
+    raise InputError(
+        "unsupported_recommendation_model",
+        "Unsupported recommendation model",
+        {
+            "model": model_version,
+            "supported_models": [
+                BASELINE_POLICY.model_version,
+                TRUSTED_BOARD_POLICY.model_version,
+                TRUSTED_BOARD_1_1_POLICY.model_version,
+            ],
+        },
     )
 
 
@@ -401,6 +477,40 @@ def calculate_expert_percentiles(
     return result
 
 
+def calculate_trusted_rank_values(
+    rankings: tuple[ExpertRankingInput, ...],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for ranking in rankings:
+        if ranking.overall_rank is None:
+            continue
+        if ranking.overall_rank <= 0:
+            raise InputError(
+                "invalid_trusted_rank",
+                "Trusted-board overall ranks must be greater than zero",
+                {
+                    "canonical_player_id": ranking.canonical_player_id,
+                    "overall_rank": ranking.overall_rank,
+                },
+            )
+        values[ranking.canonical_player_id] = _rounded(2 ** (-(ranking.overall_rank - 1) / 20))
+    return values
+
+
+def _trusted_tier_value(tier: str | None) -> float | None:
+    if tier is None or not tier.strip():
+        return None
+    tiers = ("S", "A", "B", "C", "D", "E", "F", "G", "H", "I")
+    normalized = tier.strip().upper()
+    if normalized not in tiers:
+        raise InputError(
+            "invalid_trusted_tier",
+            "Trusted-board tier must be one of S, A, B, C, D, E, F, G, H, or I",
+            {"tier": tier},
+        )
+    return _rounded((len(tiers) - 1 - tiers.index(normalized)) / (len(tiers) - 1))
+
+
 def _validate_inputs(inputs: RecommendationInputs) -> None:
     player_ids = [player.canonical_player_id for player in inputs.projected_players]
     ranking_ids = [ranking.canonical_player_id for ranking in inputs.expert_rankings]
@@ -570,7 +680,9 @@ def _candidate_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _candidate_explanation(row: dict[str, Any], rank: int) -> CandidateExplanation:
+def _candidate_explanation(
+    row: dict[str, Any], rank: int, policy: RecommendationPolicy
+) -> CandidateExplanation:
     player = row["player"]
     ranking = row["ranking"]
     limitations: list[str] = []
@@ -580,37 +692,49 @@ def _candidate_explanation(row: dict[str, Any], rank: int) -> CandidateExplanati
         limitations.append("No matched expert overall rank is available.")
     if row["scarcity"].scarcity_points is None:
         limitations.append("No following available player exists for positional scarcity.")
+    if policy.trusted_tier_weight and row["trusted_tier_value"] is None:
+        limitations.append("No trusted analyst tier is available.")
     components = row["components"]
-    return CandidateExplanation(
-        recommendation_rank=rank,
-        canonical_player_id=player.canonical_player_id,
-        sleeper_player_id=player.sleeper_player_id,
-        player_name=player.player_name,
-        position=player.position,
-        team=player.team,
-        recommendation_score=row["score"],
-        projection_baseline=row["projection"],
-        projection_value_kind=row["projection_kind"],
-        league_projected_points=player.league_projected_points,
-        league_known_component_points=player.league_known_component_points,
-        cbs_projected_points=player.cbs_projected_points,
-        scoring_completeness=player.scoring_completeness,
-        unprojected_scoring_keys=player.unprojected_scoring_keys,
-        replacement=row["replacement"],
-        vorp=row["vorp"],
-        expert_overall_rank=ranking.overall_rank if ranking else None,
-        expert_positional_rank=ranking.positional_rank if ranking else None,
-        expert_percentile=row["expert_percentile"],
-        scarcity=row["scarcity"],
-        roster_effect=row["roster_effect"],
-        vorp_component=components["vorp"],
-        expert_component=components["expert"],
-        scarcity_component=components["scarcity"],
-        roster_fit_component=components["roster"],
-        next_pick_component=components["next_pick"],
-        next_pick_availability=NextPickAvailability(),
-        limitations=tuple(limitations),
-    )
+    values: dict[str, Any] = {
+        "recommendation_rank": rank,
+        "canonical_player_id": player.canonical_player_id,
+        "sleeper_player_id": player.sleeper_player_id,
+        "player_name": player.player_name,
+        "position": player.position,
+        "team": player.team,
+        "recommendation_score": row["score"],
+        "projection_baseline": row["projection"],
+        "projection_value_kind": row["projection_kind"],
+        "league_projected_points": player.league_projected_points,
+        "league_known_component_points": player.league_known_component_points,
+        "cbs_projected_points": player.cbs_projected_points,
+        "scoring_completeness": player.scoring_completeness,
+        "unprojected_scoring_keys": player.unprojected_scoring_keys,
+        "replacement": row["replacement"],
+        "vorp": row["vorp"],
+        "expert_overall_rank": ranking.overall_rank if ranking else None,
+        "expert_positional_rank": ranking.positional_rank if ranking else None,
+        "expert_percentile": row["expert_percentile"],
+        "scarcity": row["scarcity"],
+        "roster_effect": row["roster_effect"],
+        "vorp_component": components["vorp"],
+        "expert_component": components["expert"],
+        "scarcity_component": components["scarcity"],
+        "roster_fit_component": components["roster"],
+        "next_pick_component": components["next_pick"],
+        "next_pick_availability": NextPickAvailability(),
+        "limitations": tuple(limitations),
+    }
+    if policy.trusted_tier_weight:
+        return TrustedBoardCandidateExplanation(
+            **values,
+            trusted_rank_value=row["expert_percentile"],
+            trusted_rank_component=components["expert"],
+            trusted_tier=row["trusted_tier"],
+            trusted_tier_value=row["trusted_tier_value"],
+            trusted_tier_component=components["trusted_tier"],
+        )
+    return CandidateExplanation(**values)
 
 
 def _baselines(scored: list[dict[str, Any]]) -> RecommendationBaselines:

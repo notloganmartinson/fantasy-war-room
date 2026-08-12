@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "duckdb>=1.5.5",
     "httpx>=0.28.1",
+    "mcp==2.0.0",
     "platformdirs>=4.11.0",
     "polars>=1.43.1",
     "pyarrow>=25.0.0",
@@ -24,6 +25,7 @@ dependencies = [
 [project.scripts]
 fwr = "fantasy_war_room:main"
 fantasy-war-room = "fantasy_war_room:main"
+fwr-mcp = "fantasy_war_room.mcp.server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]

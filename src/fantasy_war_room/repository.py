@@ -1748,7 +1748,8 @@ def _recommendation_rankings(
     connection: duckdb.DuckDBPyConnection, snapshot_id: str
 ) -> tuple[ExpertRankingInput, ...]:
     rows = connection.execute(
-        "SELECT canonical_player_id, overall_rank, positional_rank FROM ranking_entries "
+        "SELECT canonical_player_id, overall_rank, positional_rank, "
+        "json_extract_string(raw_payload, '$.tier') FROM ranking_entries "
         "WHERE ranking_snapshot_id = ? AND match_status = 'matched' "
         "AND canonical_player_id IS NOT NULL QUALIFY row_number() OVER ("
         "PARTITION BY canonical_player_id ORDER BY overall_rank NULLS LAST, source_row_number) = 1 "
@@ -1757,7 +1758,10 @@ def _recommendation_rankings(
     ).fetchall()
     return tuple(
         ExpertRankingInput(
-            canonical_player_id=str(row[0]), overall_rank=row[1], positional_rank=row[2]
+            canonical_player_id=str(row[0]),
+            overall_rank=row[1],
+            positional_rank=row[2],
+            tier=row[3],
         )
         for row in rows
     )
