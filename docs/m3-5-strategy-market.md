@@ -121,7 +121,8 @@ The approved requirements are:
   Rounds 5–6.
 - Kyler Murray is a preferred later target, not an instruction to draft him
   immediately.
-- QB2 and TE2 have diminishing utility.
+- QB2 has diminishing utility. TE2 utility depends on starting/FLEX effect and
+  explicit raw-value protection rather than a blanket penalty.
 - TE3 is prohibited in this format.
 - Eligible RB/WR bench depth is generally preferred over redundant QB/TE
   depth. M3.5 does not call that depth "upside" because it has no ceiling or
@@ -138,8 +139,9 @@ early-RB requirement.
 
 ### Profile schema and loading
 
-Define a frozen, explicitly versioned public model such as
-`fwr.strategy-profile/1.0`. It contains:
+The active frozen public profile schema is `fwr.strategy-profile/1.1`. Version
+1.1 adds reserved-position targets and value-sensitive TE2 policy while the
+profile name and compatible league remain unchanged. It contains:
 
 - profile name and schema version;
 - strategy-adjuster version;
@@ -174,9 +176,17 @@ The initial profile has these explicit, provisional parameters:
     "late_round_exception_start_round": null
   },
   "te2_policy": {
-    "demotion_class": "redundant_te_depth",
-    "late_round_exception_start_round": null
+    "starter_or_flex_class": "te2_starter_or_flex",
+    "bench_value_class": "te2_bench_value",
+    "ordinary_depth_class": "redundant_te_depth",
+    "max_bench_value_raw_score_deficit": 5.0,
+    "max_bench_value_raw_rank_displacement": 5
   },
+  "reserved_position_targets": [{
+    "position": "QB",
+    "target_player_name": "Kyler Murray",
+    "suppress_other_candidates_while_active": true
+  }],
   "te3_policy": {"prohibited": true},
   "bench_depth_policy": {
     "prefer_positions": ["RB", "WR"],
@@ -194,10 +204,9 @@ of `5.0` raw-score points and two raw ranks is justified only by the prior
 Brown/Amon-Ra mock fixture, where the raw gap was small. It is not an evaluated
 optimal coefficient and must not be generalized into a championship claim.
 
-`late_round_exception_start_round: null` means no late-round exception. If a
-future profile supplies a round, the QB2 or TE2 demotion stops at that round;
-it does not promote the redundant position, bypass TE3 prohibition, or bypass
-the K/DEF completion guard.
+`late_round_exception_start_round: null` means no QB2 late-round exception.
+TE2 uses the configured three-class value policy. Neither rule bypasses TE3
+prohibition or the K/DEF completion guard.
 
 The required raw model and ranking source are compatibility constraints.
 Conflicting CLI or MCP inputs fail with a structured compatibility error by
@@ -354,6 +363,11 @@ available—selected market snapshot. It is not conversational memory.
 - M3.5A must not invent an authoritative round before compatible ADP context
   exists. His state remains deferred rather than promoted immediately.
 - M3.5B activates a window using explicit market context.
+- While the configured QB reservation is active, other QBs remain in the raw
+  result but receive `reserved_position_suppressed` and cannot outrank eligible
+  non-QB alternatives. The reservation itself never promotes Kyler.
+- If another team selects Kyler, or an explicit profile removes the
+  reservation, normal QB recommendations resume.
 - Once acquired, QB is intentionally filled and QB2 receives the configured
   `redundant_qb_depth` demotion class.
 - If another team selects him, mark the target missed and use the configured
@@ -437,14 +451,20 @@ The initial enum order is explicit:
   `roster_completion_required` directive, which makes offensive candidates
   non-actionable rather than merely reranking them;
 - target promotion: `eligible_target_within_cost` before `no_promotion`;
-- positional utility: `normal_depth` before `redundant_qb_depth` and
-  `redundant_te_depth`; the two redundant classes tie and therefore fall back
-  to unchanged raw rank; and
+- positional utility: `normal_depth` and `te2_starter_or_flex`, then
+  `te2_bench_value`, then redundant QB/TE depth, then
+  `reserved_position_suppressed`; classes within a tier retain raw order; and
 - final ties: unchanged raw rank, then canonical player ID.
 
-A configured QB2/TE2 late-round exception changes that candidate's positional
-class from redundant depth back to `normal_depth` beginning at the configured
-round. The initial profile sets both exceptions to null.
+A configured QB2 late-round exception changes that candidate's positional
+class from redundant depth back to `normal_depth`. TE2 instead uses the raw
+candidate's authoritative roster effect and explicit profile cost ceilings.
+
+Strategy-aware results include a deterministic, presentation-limit-invariant
+`value_summary` from the complete candidate universe. It reports the raw
+leader, actionable choice, best raw candidate by position, highest raw-ranked
+suppressed candidate, and highest raw-ranked redundancy-affected candidate. It
+does not make an ADP or market-fall claim.
 
 The complete raw universe and strategy ordering are always evaluated before
 presentation limiting. The shared `limit_strategy_result` helper slices only
@@ -463,8 +483,9 @@ slot. They are distinct from the projection-maximizing starter allocation.
 - Filling FLEX does not create a forced positional requirement.
 - After one QB is intentionally acquired, QB2 receives
   `redundant_qb_depth`; the initial profile has no late-round exception.
-- After one TE is intentionally acquired, TE2 receives
-  `redundant_te_depth`; the initial profile has no late-round exception.
+- After one TE is intentionally acquired, TE2 is `te2_starter_or_flex` when it
+  improves the optimal lineup, `te2_bench_value` when it remains inside the
+  explicit raw-value ceilings, and `redundant_te_depth` otherwise.
 - TE3 is hard-ineligible in every round, including any future TE2 exception.
 - Eligible RB/WR bench depth sorts ahead of the two redundant-depth classes.
   No ceiling, variance, breakout, or "upside" property is inferred.
@@ -748,8 +769,8 @@ tested against both fresh and upgraded databases without data loss.
 Existing raw recommendation models retain their schemas. New versioned models
 include equivalents of:
 
-- `fwr.strategy-profile/1.0`;
-- `fwr.strategy-recommendation/1.0`;
+- `fwr.strategy-profile/1.1`;
+- `fwr.strategy-recommendation/1.1`;
 - `fwr.market-context/1.0`;
 - `fwr.opponent-demand/1.0`; and
 - `fwr.decision-log/1.0`.
@@ -791,8 +812,8 @@ adjusted scoring, target eligibility, market calculations, or baselines.
   without promotion outside that window.
 - Kyler receives no immediate promotion without market context.
 - Acquired or missed targets stop repeated promotion.
-- QB2 and TE2 receive their explicit redundant-depth demotion classes, with no
-  initial late-round exception.
+- QB2 receives its redundant-depth class. TE2 exercises all three explicit
+  starting/FLEX, bench-value, and ordinary-depth classes.
 - TE3 is excluded by a hard strategy constraint.
 - Eligible RB/WR bench depth sorts ahead of redundant QB/TE depth without an
   unsupported upside claim.
@@ -867,8 +888,8 @@ M3.5A is accepted when:
    adjustment costs and reasons.
 6. Brown, McBride, Loveland, and Kyler obey their approved semantics at every
    tested window boundary.
-7. Explicit QB2/TE2 demotion classes, TE3 prohibition, RB/WR bench-depth
-   preference, and the `R <= M` K/DEF guard are enforced without imposing
+7. Reserved-QB and value-sensitive TE2 classes, TE3 prohibition, and the
+   `R <= M` K/DEF guard are enforced without imposing
    roster balance or inventing upside.
 8. `fwr recommend --strategy` works without synchronization and with stable
    human and JSON presentation.

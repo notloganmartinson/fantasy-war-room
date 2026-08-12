@@ -441,6 +441,13 @@ actionable candidates, and `roster_completion_required`; Codex must not treat
 the embedded raw leader as a recommendation. Requested limits are applied only
 to the adjusted presentation rows after full strategy evaluation.
 
+The adjusted response also exposes effective reserved-position state and a
+limit-invariant cross-position `value_summary`. In the default profile, Kyler
+Murray reserves QB while active without receiving an early promotion; other
+QBs do not become actionable ahead of eligible non-QBs. TE2 is classified by
+its actual starting/FLEX effect and configured raw-value ceilings, while TE3
+remains prohibited.
+
 ## Server instructions for Codex
 
 The MCP initialization `instructions` field begins with the most important

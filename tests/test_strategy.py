@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from mcp import Client
+from pydantic import ValidationError
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -26,7 +27,7 @@ from fantasy_war_room.mcp.repository import McpReadRepository
 from fantasy_war_room.mcp.server import create_server
 from fantasy_war_room.mcp.service import DraftCopilotService
 from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_compatibility
-from fantasy_war_room.strategy.load import default_strategy_profile
+from fantasy_war_room.strategy.load import default_strategy_profile, profile_hash
 from fantasy_war_room.strategy.presentation import limit_strategy_result
 
 
@@ -152,10 +153,13 @@ def test_qb2_te2_demotion_te3_prohibition_and_completion_guard() -> None:
     result = apply_strategy(recommend(inputs, "trusted-board-1.1"), inputs, profile)
     by_name = {row.raw_candidate.player_name: row for row in result.evaluated_candidates}
 
-    assert by_name["QB Two"].positional_utility_class == "redundant_qb_depth"
+    suppressed_qb = next(
+        row for row in result.prohibited_candidates if row.raw_candidate.player_name == "QB Two"
+    )
+    assert suppressed_qb.positional_utility_class == "reserved_position_suppressed"
     assert "TE Two" not in by_name
     assert "TE Three" in {row.raw_candidate.player_name for row in result.prohibited_candidates}
-    assert by_name["RB One"].strategy_rank < by_name["QB Two"].strategy_rank
+    assert by_name["RB One"].eligible is True
     assert result.roster_completion_required is True
     assert result.actionable is False
     assert result.actionable_choice is None
@@ -166,6 +170,213 @@ def test_qb2_te2_demotion_te3_prohibition_and_completion_guard() -> None:
     assert result.directive.boundary_status == "already_impossible"
     assert result.remaining_user_selections == 1
     assert result.unfilled_required_positions == ("K", "DEF")
+
+
+def test_reserved_kyler_target_suppresses_other_qbs_without_promoting_kyler() -> None:
+    inputs = _inputs(completed=(CompletedDraftPick(pick_no=1, draft_slot=2),))
+    raw = _raw_with_order(inputs, ("QB One", "WR One", "Kyler Murray"))
+    result = apply_strategy(raw, inputs, _profile())
+    by_name = {
+        row.raw_candidate.player_name: row
+        for row in (*result.evaluated_candidates, *result.prohibited_candidates)
+    }
+
+    assert raw.candidates[0].player_name == "QB One"
+    assert result.actionable_choice is not None
+    assert result.actionable_choice.raw_candidate.position != "QB"
+    assert by_name["QB One"].positional_utility_class == "reserved_position_suppressed"
+    assert "reserved_position_target_active" in by_name["QB One"].reason_codes
+    assert by_name["Kyler Murray"].target_promotion_class == "no_promotion"
+    assert next(
+        target for target in result.targets if target.player_name == "Kyler Murray"
+    ).state == ("deferred_pending_market_context")
+    reserved = result.reserved_position_targets[0]
+    assert reserved.active is True and reserved.suppression_applied is True
+
+
+def test_reserved_qb_target_ends_when_missed_or_acquired_and_can_be_abandoned() -> None:
+    players = _players()
+    ids = {row.player_name: row.canonical_player_id for row in players}
+    opponent = _inputs(
+        players=players,
+        completed=(
+            CompletedDraftPick(
+                pick_no=1,
+                draft_slot=2,
+                canonical_player_id=ids["Kyler Murray"],
+                position="QB",
+            ),
+        ),
+    )
+    opponent_result = apply_strategy(
+        _raw_with_order(opponent, ("QB One", "WR One")), opponent, _profile()
+    )
+    assert opponent_result.actionable_choice is not None
+    assert opponent_result.actionable_choice.raw_candidate.player_name == "QB One"
+    assert opponent_result.reserved_position_targets[0].active is False
+
+    acquired = _inputs(
+        players=players,
+        completed=(
+            CompletedDraftPick(
+                pick_no=1,
+                draft_slot=1,
+                canonical_player_id=ids["Kyler Murray"],
+                position="QB",
+            ),
+        ),
+    )
+    acquired_result = apply_strategy(
+        _raw_with_order(acquired, ("QB One", "WR One")), acquired, _profile()
+    )
+    acquired_qb = next(
+        row
+        for row in acquired_result.evaluated_candidates
+        if row.raw_candidate.player_name == "QB One"
+    )
+    assert acquired_qb.positional_utility_class == "redundant_qb_depth"
+    assert acquired_result.reserved_position_targets[0].active is False
+
+    abandoned = _profile().model_copy(update={"reserved_position_targets": ()})
+    available = _inputs(completed=(CompletedDraftPick(pick_no=1, draft_slot=2),))
+    abandoned_result = apply_strategy(
+        _raw_with_order(available, ("QB One", "WR One")), available, abandoned
+    )
+    assert abandoned_result.actionable_choice is not None
+    assert abandoned_result.actionable_choice.raw_candidate.player_name == "QB One"
+
+
+def test_te2_uses_lineup_flex_value_then_bench_value_then_redundancy() -> None:
+    players = _players()
+    ids = {row.player_name: row.canonical_player_id for row in players}
+    te1_pick = CompletedDraftPick(
+        pick_no=1,
+        draft_slot=1,
+        canonical_player_id=ids["TE One"],
+        position="TE",
+    )
+    lineup_inputs = _inputs(players=players, completed=(te1_pick,))
+    lineup = apply_strategy(
+        recommend(lineup_inputs, "trusted-board-1.1"), lineup_inputs, _profile()
+    )
+    lineup_by_name = {row.raw_candidate.player_name: row for row in lineup.evaluated_candidates}
+    assert lineup_by_name["Colston Loveland"].positional_utility_class == "te2_starter_or_flex"
+    assert "te2_improves_starting_lineup" in lineup_by_name["Colston Loveland"].reason_codes
+    assert next(
+        target for target in lineup.targets if target.player_name == "Colston Loveland"
+    ).state == ("fallback_inactive")
+
+    full_roster = (
+        CompletedDraftPick(
+            pick_no=1,
+            draft_slot=1,
+            canonical_player_id=ids["Trey McBride"],
+            position="TE",
+        ),
+        CompletedDraftPick(
+            pick_no=2,
+            draft_slot=1,
+            canonical_player_id=ids["Amon-Ra St. Brown"],
+            position="WR",
+        ),
+        CompletedDraftPick(
+            pick_no=3,
+            draft_slot=1,
+            canonical_player_id=ids["Chase Brown"],
+            position="RB",
+        ),
+        CompletedDraftPick(
+            pick_no=4,
+            draft_slot=1,
+            canonical_player_id=ids["WR One"],
+            position="WR",
+        ),
+    )
+    bench_inputs = _inputs(players=players, completed=full_roster)
+    bench_raw = _raw_with_order(bench_inputs, ("Colston Loveland", "RB One", "TE Two"))
+    bench = apply_strategy(bench_raw, bench_inputs, _profile())
+    bench_by_name = {row.raw_candidate.player_name: row for row in bench.evaluated_candidates}
+    assert bench_by_name["Colston Loveland"].raw_candidate.roster_effect.category == "bench_depth"
+    assert bench_by_name["Colston Loveland"].positional_utility_class == "te2_bench_value"
+    assert bench_by_name["TE Two"].positional_utility_class == "redundant_te_depth"
+    assert bench_by_name["Colston Loveland"].strategy_rank < bench_by_name["TE Two"].strategy_rank
+
+
+def test_te3_remains_prohibited_and_value_summary_is_limit_invariant() -> None:
+    players = _players()
+    ids = {row.player_name: row.canonical_player_id for row in players}
+    inputs = _inputs(
+        players=players,
+        completed=(
+            CompletedDraftPick(
+                pick_no=1, draft_slot=1, canonical_player_id=ids["TE One"], position="TE"
+            ),
+            CompletedDraftPick(
+                pick_no=2, draft_slot=1, canonical_player_id=ids["TE Two"], position="TE"
+            ),
+        ),
+    )
+    raw = _raw_with_order(inputs, ("TE Three", "QB One", "RB One", "WR One"))
+    complete = apply_strategy(raw, inputs, _profile())
+    limited = limit_strategy_result(complete, 1)
+
+    assert "TE Three" in {row.raw_candidate.player_name for row in complete.prohibited_candidates}
+    assert complete.value_summary == limited.value_summary
+    assert complete.raw_recommendation == limited.raw_recommendation == raw
+    summary = complete.value_summary
+    assert summary.best_available_by_position["TE"] is not None
+    assert summary.best_available_by_position["TE"].player_name == "TE Three"
+    assert summary.highest_raw_ranked_suppressed_candidate is not None
+    assert summary.highest_raw_ranked_suppressed_candidate.player_name == "TE Three"
+    assert "adp" not in json.dumps(summary.model_dump(mode="json")).casefold()
+
+
+def test_value_summary_is_deterministic_for_input_order_and_surfaces_te2_value() -> None:
+    players = tuple(
+        player.model_copy(
+            update={
+                "player_name": "Mark Andrews",
+                "league_projected_points": 195.0,
+                "league_known_component_points": 195.0,
+                "cbs_projected_points": 195.0,
+            }
+        )
+        if player.player_name == "TE Two"
+        else player
+        for player in _players()
+    )
+    ids = {row.player_name: row.canonical_player_id for row in players}
+    completed = (
+        CompletedDraftPick(
+            pick_no=1,
+            draft_slot=1,
+            canonical_player_id=ids["Trey McBride"],
+            position="TE",
+        ),
+        CompletedDraftPick(
+            pick_no=2,
+            draft_slot=1,
+            canonical_player_id=ids["Amon-Ra St. Brown"],
+            position="WR",
+        ),
+        CompletedDraftPick(
+            pick_no=3, draft_slot=1, canonical_player_id=ids["Chase Brown"], position="RB"
+        ),
+        CompletedDraftPick(
+            pick_no=4, draft_slot=1, canonical_player_id=ids["WR One"], position="WR"
+        ),
+    )
+    inputs = _inputs(players=players, completed=completed)
+    raw = _raw_with_order(inputs, ("Mark Andrews", "RB One", "WR Two"))
+    first = apply_strategy(raw, inputs, _profile())
+    reordered_inputs = inputs.model_copy(update={"projected_players": tuple(reversed(players))})
+    repeated = apply_strategy(raw, reordered_inputs, _profile())
+
+    assert first.value_summary == repeated.value_summary
+    affected = first.value_summary.highest_raw_ranked_redundancy_affected_candidate
+    assert affected is not None
+    assert affected.player_name == "Mark Andrews"
+    assert affected.positional_utility_class == "te2_bench_value"
 
 
 @pytest.mark.parametrize(
@@ -293,6 +504,24 @@ def test_committed_profile_declares_every_compatibility_field() -> None:
         "k",
         "defense",
     } <= payload.keys()
+    assert payload["schema_version"] == "1.1"
+    assert payload["reserved_position_targets"][0]["target_player_name"] == "Kyler Murray"
+    profile = default_strategy_profile()
+    assert profile.schema_version == "1.1"
+    assert profile.reserved_position_targets[0].target_player_name == "Kyler Murray"
+    assert profile_hash(profile) == profile_hash(default_strategy_profile())
+
+
+def test_reserved_target_and_te2_value_policy_are_validated() -> None:
+    payload = default_strategy_profile().model_dump(mode="json")
+    payload["reserved_position_targets"][0]["target_player_name"] = "Unknown Target"
+    with pytest.raises(ValidationError, match="is not a configured target"):
+        type(default_strategy_profile()).model_validate(payload)
+
+    payload = default_strategy_profile().model_dump(mode="json")
+    payload["te2_policy"]["max_bench_value_raw_score_deficit"] = -1
+    with pytest.raises(ValidationError):
+        type(default_strategy_profile()).model_validate(payload)
 
 
 def test_completion_human_rendering_hides_offensive_leader(monkeypatch) -> None:
@@ -347,6 +576,10 @@ def test_strategy_mcp_adds_dynamic_tool_and_preserves_complete_raw_result(tmp_pa
             data = recommendation.structured_content["data"]
             assert data["raw_recommendation"]["schema_version"] == "1.1"
             assert len(data["raw_recommendation"]["candidates"]) >= len(data["candidates"])
+            assert data["value_summary"]["best_available_by_position"]
+            assert data["reserved_position_targets"]
+            assert "exclusive planned QB target" in client.instructions
+            assert "TE2 is value-sensitive" in client.instructions
 
     asyncio.run(exercise())
 
@@ -567,6 +800,26 @@ def _profile(*, team_count: int = 2, flex: int = 1):
             "team_count": team_count,
             "compatible_draft_slots": (1,),
             "flex": flex,
+        }
+    )
+
+
+def _raw_with_order(inputs: RecommendationInputs, names: tuple[str, ...]):
+    raw = recommend(inputs, "trusted-board-1.1")
+    by_name = {candidate.player_name: candidate for candidate in raw.candidates}
+    selected = [by_name[name] for name in names]
+    selected_ids = {candidate.canonical_player_id for candidate in selected}
+    ordered = selected + [
+        candidate
+        for candidate in raw.candidates
+        if candidate.canonical_player_id not in selected_ids
+    ]
+    return raw.model_copy(
+        update={
+            "candidates": tuple(
+                candidate.model_copy(update={"recommendation_rank": rank})
+                for rank, candidate in enumerate(ordered, start=1)
+            )
         }
     )
 

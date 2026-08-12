@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "profile_name": "logan-ppr-2flex-1.0",
-  "strategy_adjuster_version": "lexicographic-strategy-1.0",
+  "strategy_adjuster_version": "lexicographic-strategy-1.1",
   "required_raw_model": "trusted-board-1.1",
   "required_ranking_source": "parlay-play-hybrid",
   "sport": "nfl",
@@ -24,9 +24,19 @@
     "late_round_exception_start_round": null
   },
   "te2_policy": {
-    "demotion_class": "redundant_te_depth",
-    "late_round_exception_start_round": null
+    "starter_or_flex_class": "te2_starter_or_flex",
+    "bench_value_class": "te2_bench_value",
+    "ordinary_depth_class": "redundant_te_depth",
+    "max_bench_value_raw_score_deficit": 5.0,
+    "max_bench_value_raw_rank_displacement": 5
   },
+  "reserved_position_targets": [
+    {
+      "position": "QB",
+      "target_player_name": "Kyler Murray",
+      "suppress_other_candidates_while_active": true
+    }
+  ],
   "te3_prohibited": true,
   "prefer_rb_wr_over_redundant_qb_te": true,
   "roster_completion_guard": {

@@ -54,6 +54,20 @@ class RedundantDepthPolicy(StrategyModel):
     late_round_exception_start_round: int | None = Field(default=None, ge=1)
 
 
+class ReservedPositionTarget(StrategyModel):
+    position: Literal["QB", "RB", "WR", "TE"]
+    target_player_name: str
+    suppress_other_candidates_while_active: bool = True
+
+
+class Te2ValuePolicy(StrategyModel):
+    starter_or_flex_class: Literal["te2_starter_or_flex"] = "te2_starter_or_flex"
+    bench_value_class: Literal["te2_bench_value"] = "te2_bench_value"
+    ordinary_depth_class: Literal["redundant_te_depth"] = "redundant_te_depth"
+    max_bench_value_raw_score_deficit: float = Field(default=5.0, ge=0)
+    max_bench_value_raw_rank_displacement: int = Field(default=5, ge=0)
+
+
 class RosterCompletionGuard(StrategyModel):
     required_positions: tuple[Literal["K", "DEF"], ...] = ("K", "DEF")
     trigger: Literal["remaining_user_picks_lte_unfilled_required_slots"] = (
@@ -62,9 +76,9 @@ class RosterCompletionGuard(StrategyModel):
 
 
 class StrategyProfile(StrategyModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     profile_name: str
-    strategy_adjuster_version: Literal["lexicographic-strategy-1.0"] = "lexicographic-strategy-1.0"
+    strategy_adjuster_version: Literal["lexicographic-strategy-1.1"] = "lexicographic-strategy-1.1"
     required_raw_model: Literal["trusted-board-1.1"] = "trusted-board-1.1"
     required_ranking_source: str = "parlay-play-hybrid"
     sport: Literal["nfl"] = "nfl"
@@ -83,11 +97,28 @@ class StrategyProfile(StrategyModel):
     default_max_target_raw_score_deficit: float = 5.0
     default_max_target_raw_rank_displacement: int = 2
     qb2_policy: RedundantDepthPolicy
-    te2_policy: RedundantDepthPolicy
+    te2_policy: Te2ValuePolicy
+    reserved_position_targets: tuple[ReservedPositionTarget, ...] = ()
     te3_prohibited: bool = True
     prefer_rb_wr_over_redundant_qb_te: bool = True
     roster_completion_guard: RosterCompletionGuard = RosterCompletionGuard()
     targets: tuple[TargetProfile, ...]
+
+    @model_validator(mode="after")
+    def valid_reserved_targets(self) -> StrategyProfile:
+        targets = {target.player_name: target for target in self.targets}
+        positions: set[str] = set()
+        for reserved in self.reserved_position_targets:
+            if reserved.position in positions:
+                raise ValueError(
+                    f"reserved position {reserved.position} is configured more than once"
+                )
+            positions.add(reserved.position)
+            if reserved.target_player_name not in targets:
+                raise ValueError(
+                    f"reserved target {reserved.target_player_name!r} is not a configured target"
+                )
+        return self
 
 
 class TargetEvaluation(StrategyModel):
@@ -103,14 +134,21 @@ class TargetEvaluation(StrategyModel):
 
 
 class StrategyCandidate(StrategyModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     strategy_rank: int
     canonical_player_id: str
     raw_rank: int
     raw_score: float
     eligible: bool
     target_promotion_class: Literal["eligible_target_within_cost", "no_promotion"]
-    positional_utility_class: Literal["normal_depth", "redundant_qb_depth", "redundant_te_depth"]
+    positional_utility_class: Literal[
+        "normal_depth",
+        "te2_starter_or_flex",
+        "te2_bench_value",
+        "redundant_qb_depth",
+        "redundant_te_depth",
+        "reserved_position_suppressed",
+    ]
     reason_codes: tuple[str, ...]
     raw_candidate: SerializeAsAny[CandidateExplanation]
 
@@ -125,6 +163,37 @@ class StrategyProvenance(StrategyModel):
     required_ranking_source: str
 
 
+class ReservedPositionTargetState(StrategyModel):
+    position: Literal["QB", "RB", "WR", "TE"]
+    target_player_name: str
+    canonical_player_id: str | None
+    target_state: TargetState
+    active: bool
+    suppression_applied: bool
+    reason: str
+
+
+class StrategyValueSummaryItem(StrategyModel):
+    canonical_player_id: str
+    player_name: str
+    position: Literal["QB", "RB", "WR", "TE"]
+    raw_rank: int
+    raw_score: float
+    strategy_rank: int | None
+    eligible: bool
+    positional_utility_class: str
+    reason_codes: tuple[str, ...]
+
+
+class StrategyValueSummary(StrategyModel):
+    schema_version: Literal["1.0"] = "1.0"
+    best_raw_candidate: StrategyValueSummaryItem | None
+    actionable_choice: StrategyValueSummaryItem | None
+    best_available_by_position: dict[str, StrategyValueSummaryItem | None]
+    highest_raw_ranked_suppressed_candidate: StrategyValueSummaryItem | None
+    highest_raw_ranked_redundancy_affected_candidate: StrategyValueSummaryItem | None
+
+
 class RosterCompletionDirective(StrategyModel):
     schema_version: Literal["1.0"] = "1.0"
     code: Literal["roster_completion_required"] = "roster_completion_required"
@@ -137,7 +206,7 @@ class RosterCompletionDirective(StrategyModel):
 
 
 class StrategyRecommendationResult(StrategyModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     raw_recommendation: SerializeAsAny[RecommendationResult]
     actionable: bool
     actionable_choice: StrategyCandidate | None
@@ -146,6 +215,8 @@ class StrategyRecommendationResult(StrategyModel):
     evaluated_candidates: tuple[StrategyCandidate, ...]
     prohibited_candidates: tuple[StrategyCandidate, ...]
     targets: tuple[TargetEvaluation, ...]
+    reserved_position_targets: tuple[ReservedPositionTargetState, ...]
+    value_summary: StrategyValueSummary
     roster_completion_required: bool
     remaining_user_selections: int
     unfilled_required_positions: tuple[str, ...]

@@ -77,6 +77,10 @@ class DraftCopilotService:
             "profile_hash": profile_hash(self.strategy_profile),
             "profile_temporal_status": "current_explicit_profile",
             "targets": [target.model_dump(mode="json") for target in adjusted.targets],
+            "reserved_position_targets": [
+                target.model_dump(mode="json") for target in adjusted.reserved_position_targets
+            ],
+            "value_summary": adjusted.value_summary.model_dump(mode="json"),
             "roster_completion_required": adjusted.roster_completion_required,
             "actionable": adjusted.actionable,
             "directive": adjusted.directive.model_dump(mode="json") if adjusted.directive else None,

@@ -7,11 +7,14 @@ from fantasy_war_room.errors import InputError
 from fantasy_war_room.identity import normalize_name
 from fantasy_war_room.strategy.load import profile_hash
 from fantasy_war_room.strategy.models import (
+    ReservedPositionTargetState,
     RosterCompletionDirective,
     StrategyCandidate,
     StrategyProfile,
     StrategyProvenance,
     StrategyRecommendationResult,
+    StrategyValueSummary,
+    StrategyValueSummaryItem,
     TargetEvaluation,
     TargetProfile,
     TargetState,
@@ -120,6 +123,34 @@ def apply_strategy(
         if user_position_counts.get(position, 0) == 0
     )
     completion_required = bool(unfilled) and remaining <= len(unfilled)
+    evaluations_by_name = {evaluation.player_name: evaluation for evaluation in target_evaluations}
+    reserved_states: list[ReservedPositionTargetState] = []
+    active_reserved_by_position: dict[str, str] = {}
+    for reserved in profile.reserved_position_targets:
+        evaluation = evaluations_by_name[reserved.target_player_name]
+        active = bool(
+            evaluation.canonical_player_id
+            and evaluation.state in {"too_early", "in_window", "deferred_pending_market_context"}
+        )
+        suppression = active and reserved.suppress_other_candidates_while_active
+        if suppression:
+            active_reserved_by_position[reserved.position] = evaluation.canonical_player_id or ""
+        reserved_states.append(
+            ReservedPositionTargetState(
+                position=reserved.position,
+                target_player_name=reserved.target_player_name,
+                canonical_player_id=evaluation.canonical_player_id,
+                target_state=evaluation.state,
+                active=active,
+                suppression_applied=suppression,
+                reason=(
+                    "Configured target remains reserved; other candidates at the position "
+                    "are suppressed"
+                    if suppression
+                    else "Reserved target is no longer active"
+                ),
+            )
+        )
     decorated: list[tuple[tuple[Any, ...], StrategyCandidate]] = []
     prohibited: list[StrategyCandidate] = []
     for raw_candidate in raw_candidates:
@@ -144,10 +175,20 @@ def apply_strategy(
                 reasons.append("target_raw_cost_exceeded")
 
         position_count = user_position_counts.get(raw_candidate.position, 0)
-        utility: Literal["normal_depth", "redundant_qb_depth", "redundant_te_depth"] = (
-            "normal_depth"
-        )
-        if raw_candidate.position == "QB" and position_count >= 1:
+        utility: Literal[
+            "normal_depth",
+            "te2_starter_or_flex",
+            "te2_bench_value",
+            "redundant_qb_depth",
+            "redundant_te_depth",
+            "reserved_position_suppressed",
+        ] = "normal_depth"
+        reserved_id = active_reserved_by_position.get(raw_candidate.position)
+        if reserved_id and raw_candidate.canonical_player_id != reserved_id:
+            eligible = False
+            utility = "reserved_position_suppressed"
+            reasons.append("reserved_position_target_active")
+        elif raw_candidate.position == "QB" and position_count >= 1:
             exception = profile.qb2_policy.late_round_exception_start_round
             if exception is None or raw.turn_context.current_round < exception:
                 utility = "redundant_qb_depth"
@@ -157,9 +198,20 @@ def apply_strategy(
                 eligible = False
                 reasons.append("te3_prohibited")
             else:
-                exception = profile.te2_policy.late_round_exception_start_round
-                if exception is None or raw.turn_context.current_round < exception:
-                    utility = "redundant_te_depth"
+                effect = raw_candidate.roster_effect
+                if effect.category != "bench_depth" and effect.candidate_assigned_slot is not None:
+                    utility = profile.te2_policy.starter_or_flex_class
+                    reasons.append("te2_improves_starting_lineup")
+                elif (
+                    leader_score - raw_candidate.recommendation_score
+                    <= profile.te2_policy.max_bench_value_raw_score_deficit
+                    and raw_candidate.recommendation_rank - 1
+                    <= profile.te2_policy.max_bench_value_raw_rank_displacement
+                ):
+                    utility = profile.te2_policy.bench_value_class
+                    reasons.append("te2_bench_value_within_raw_cost")
+                else:
+                    utility = profile.te2_policy.ordinary_depth_class
                     reasons.append("te2_redundant_depth")
         if completion_required:
             reasons.append("roster_completion_required")
@@ -177,7 +229,7 @@ def apply_strategy(
         key = (
             0 if eligible else 1,
             0 if promotion == "eligible_target_within_cost" else 1,
-            0 if utility == "normal_depth" else 1,
+            _utility_order(utility),
             raw_candidate.recommendation_rank,
             raw_candidate.canonical_player_id,
         )
@@ -194,10 +246,17 @@ def apply_strategy(
         candidate.model_copy(update={"strategy_rank": 0})
         for candidate in sorted(prohibited, key=lambda row: (row.raw_rank, row.canonical_player_id))
     )
+    actionable_choice = ordered[0] if ordered and not completion_required else None
+    value_summary = _value_summary(
+        raw_candidates,
+        ordered,
+        prohibited_result,
+        actionable_choice,
+    )
     return StrategyRecommendationResult(
         raw_recommendation=raw,
         actionable=not completion_required,
-        actionable_choice=ordered[0] if ordered and not completion_required else None,
+        actionable_choice=actionable_choice,
         directive=(
             RosterCompletionDirective(
                 boundary_status=(
@@ -214,6 +273,8 @@ def apply_strategy(
         evaluated_candidates=ordered,
         prohibited_candidates=prohibited_result,
         targets=tuple(target_evaluations),
+        reserved_position_targets=tuple(reserved_states),
+        value_summary=value_summary,
         roster_completion_required=completion_required,
         remaining_user_selections=remaining,
         unfilled_required_positions=unfilled,
@@ -223,6 +284,92 @@ def apply_strategy(
             required_raw_model=profile.required_raw_model,
             required_ranking_source=profile.required_ranking_source,
         ),
+    )
+
+
+def _utility_order(value: str) -> int:
+    return {
+        "normal_depth": 0,
+        "te2_starter_or_flex": 0,
+        "te2_bench_value": 1,
+        "redundant_qb_depth": 2,
+        "redundant_te_depth": 2,
+        "reserved_position_suppressed": 3,
+    }[value]
+
+
+def _summary_item(candidate: StrategyCandidate | None) -> StrategyValueSummaryItem | None:
+    if candidate is None:
+        return None
+    raw = candidate.raw_candidate
+    return StrategyValueSummaryItem(
+        canonical_player_id=candidate.canonical_player_id,
+        player_name=raw.player_name,
+        position=raw.position,
+        raw_rank=candidate.raw_rank,
+        raw_score=candidate.raw_score,
+        strategy_rank=candidate.strategy_rank or None,
+        eligible=candidate.eligible,
+        positional_utility_class=candidate.positional_utility_class,
+        reason_codes=candidate.reason_codes,
+    )
+
+
+def _value_summary(
+    raw_candidates: list[Any],
+    ordered: tuple[StrategyCandidate, ...],
+    prohibited: tuple[StrategyCandidate, ...],
+    actionable_choice: StrategyCandidate | None,
+) -> StrategyValueSummary:
+    evaluated = sorted(
+        (*ordered, *prohibited), key=lambda row: (row.raw_rank, row.canonical_player_id)
+    )
+    by_position = {
+        position: next((row for row in evaluated if row.raw_candidate.position == position), None)
+        for position in ("QB", "RB", "WR", "TE")
+    }
+    suppressed = next(
+        (
+            row
+            for row in evaluated
+            if not row.eligible or _utility_order(row.positional_utility_class) > 0
+        ),
+        None,
+    )
+    redundancy = next(
+        (
+            row
+            for row in evaluated
+            if row.positional_utility_class
+            in {
+                "te2_starter_or_flex",
+                "te2_bench_value",
+                "redundant_qb_depth",
+                "redundant_te_depth",
+            }
+        ),
+        None,
+    )
+    raw_leader = (
+        next(
+            (
+                row
+                for row in evaluated
+                if row.canonical_player_id == raw_candidates[0].canonical_player_id
+            ),
+            None,
+        )
+        if raw_candidates
+        else None
+    )
+    return StrategyValueSummary(
+        best_raw_candidate=_summary_item(raw_leader),
+        actionable_choice=_summary_item(actionable_choice),
+        best_available_by_position={
+            position: _summary_item(candidate) for position, candidate in by_position.items()
+        },
+        highest_raw_ranked_suppressed_candidate=_summary_item(suppressed),
+        highest_raw_ranked_redundancy_affected_candidate=_summary_item(redundancy),
     )
 
 
