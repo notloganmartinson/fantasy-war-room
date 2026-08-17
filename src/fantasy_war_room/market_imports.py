@@ -50,11 +50,57 @@ def import_adp(
     league_size: int,
     draft_type: str,
     observed_at: datetime | None = None,
+    source_uri: str | None = None,
+    fetched_at: datetime | None = None,
+    source_payload_hash: str | None = None,
+    transformation_version: str | None = None,
 ) -> tuple[AdpSnapshot, bool]:
     if league_size <= 0:
         raise InputError("invalid_league_size", "League size must be greater than zero")
     resolved, frame = _csv(path, {"player_name", "overall_adp"})
-    at, imported_at = observed_at or datetime.now(UTC), datetime.now(UTC)
+    return import_adp_frame(
+        frame,
+        repository,
+        original_filename=resolved.name,
+        source=source,
+        source_version=source_version,
+        season=season,
+        scoring_format=scoring_format,
+        league_size=league_size,
+        draft_type=draft_type,
+        observed_at=observed_at,
+        source_uri=source_uri,
+        fetched_at=fetched_at,
+        source_payload_hash=source_payload_hash,
+        transformation_version=transformation_version,
+    )
+
+
+def import_adp_frame(
+    frame: pl.DataFrame,
+    repository: IntelligenceRepository,
+    *,
+    original_filename: str,
+    source: str,
+    source_version: str,
+    season: str,
+    scoring_format: str,
+    league_size: int,
+    draft_type: str,
+    observed_at: datetime | None = None,
+    source_uri: str | None = None,
+    fetched_at: datetime | None = None,
+    source_payload_hash: str | None = None,
+    transformation_version: str | None = None,
+) -> tuple[AdpSnapshot, bool]:
+    if league_size <= 0:
+        raise InputError("invalid_league_size", "League size must be greater than zero")
+    missing = sorted({"player_name", "overall_adp"} - set(frame.columns))
+    if missing:
+        raise InputError(
+            "missing_csv_columns", "ADP data is missing required columns", {"columns": missing}
+        )
+    at, imported_at = observed_at or fetched_at or datetime.now(UTC), datetime.now(UTC)
     entries: list[dict[str, Any]] = []
     issues: list[AdpIssue] = []
     snapshot_id = str(uuid4())
@@ -127,11 +173,15 @@ def import_adp(
         imported_at=imported_at,
         payload_hash=_hash(content),
         identity_resolver_version=RESOLVER_VERSION,
-        original_filename=resolved.name,
+        original_filename=original_filename,
         total_row_count=frame.height,
         matched_row_count=sum(r["match_status"] == "matched" for r in entries),
         unresolved_row_count=sum(r["match_status"] == "unresolved" for r in entries),
         ambiguous_row_count=sum(r["match_status"] == "ambiguous" for r in entries),
+        source_uri=source_uri,
+        fetched_at=fetched_at,
+        source_payload_hash=source_payload_hash,
+        transformation_version=transformation_version,
     )
     return snapshot, repository.insert_adp_snapshot(snapshot, entries, issues)
 
@@ -144,8 +194,46 @@ def import_team_schedule(
     source_version: str,
     season: str,
     observed_at: datetime | None = None,
+    source_uri: str | None = None,
+    fetched_at: datetime | None = None,
+    source_payload_hash: str | None = None,
+    transformation_version: str | None = None,
 ) -> tuple[TeamScheduleSnapshot, bool]:
     resolved, frame = _csv(path, {"team", "bye_week"})
+    return import_team_schedule_frame(
+        frame,
+        repository,
+        original_filename=resolved.name,
+        source=source,
+        source_version=source_version,
+        season=season,
+        observed_at=observed_at,
+        source_uri=source_uri,
+        fetched_at=fetched_at,
+        source_payload_hash=source_payload_hash,
+        transformation_version=transformation_version,
+    )
+
+
+def import_team_schedule_frame(
+    frame: pl.DataFrame,
+    repository: IntelligenceRepository,
+    *,
+    original_filename: str,
+    source: str,
+    source_version: str,
+    season: str,
+    observed_at: datetime | None = None,
+    source_uri: str | None = None,
+    fetched_at: datetime | None = None,
+    source_payload_hash: str | None = None,
+    transformation_version: str | None = None,
+) -> tuple[TeamScheduleSnapshot, bool]:
+    missing = sorted({"team", "bye_week"} - set(frame.columns))
+    if missing:
+        raise InputError(
+            "missing_csv_columns", "Schedule data is missing required columns", {"columns": missing}
+        )
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row_number, raw in enumerate(frame.to_dicts(), start=2):
@@ -162,7 +250,7 @@ def import_team_schedule(
             )
         seen.add(team)
         entries.append({"team": team, "bye_week": bye, "raw_payload": raw})
-    at, imported_at = observed_at or datetime.now(UTC), datetime.now(UTC)
+    at, imported_at = observed_at or fetched_at or datetime.now(UTC), datetime.now(UTC)
     snapshot = TeamScheduleSnapshot(
         schedule_snapshot_id=str(uuid4()),
         source=source,
@@ -171,7 +259,11 @@ def import_team_schedule(
         observed_at=at,
         imported_at=imported_at,
         payload_hash=_hash({"source_version": source_version, "rows": entries}),
-        original_filename=resolved.name,
+        original_filename=original_filename,
         total_row_count=frame.height,
+        source_uri=source_uri,
+        fetched_at=fetched_at,
+        source_payload_hash=source_payload_hash,
+        transformation_version=transformation_version,
     )
     return snapshot, repository.insert_schedule_snapshot(snapshot, entries)

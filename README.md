@@ -14,6 +14,7 @@ git clone https://github.com/notloganmartinson/fantasy-war-room.git
 cd fantasy-war-room
 uv sync
 uv run fwr setup --username YOUR_SLEEPER_USERNAME
+uv run fwr data bootstrap
 uv run fwr draft-ready
 uv run fwr codex configure
 ```
@@ -23,9 +24,26 @@ state, and refreshes the canonical player directory. With multiple leagues it pr
 automation must pass `--league-id`. An unpublished draft order is reported as pending and setup
 is safe to rerun.
 
-Sleeper connectivity and intelligence readiness are separate. A clean clone has no private
-ranking, projection, ADP, or schedule imports. `draft-ready` reports each missing input and does
-not claim `READY` until required compatible ranking and projection data exist.
+Sleeper connectivity and intelligence readiness are separate. `data bootstrap` derives the
+active league's season, team count, scoring format, and draft type from synchronized Sleeper
+observations. It automatically acquires exact-format ADP from Fantasy Football Calculator and
+derives NFL bye weeks from the nflverse schedule dataset. A clean clone still has no rankings or
+projections: `draft-ready` reports those required inputs and does not claim `READY` until both
+are imported compatibly.
+
+Fantasy Football Calculator's documented ADP API is free for personal and commercial use and
+requests attribution; its data is based on human mock drafts and updates daily. nflverse
+schedule data is distributed under CC BY 4.0. FWR caches sanitized raw responses for 24 hours in
+the XDG cache directory, then stores normalized immutable observations in DuckDB with source
+URI/version, fetch/observation/import times, source and normalized payload hashes, identity
+resolver version, and deterministic transformation version. Use `--force` to bypass the cache.
+
+FantasyPros rankings and projections are not automatic in M4B. Its official API requires an
+approved private key and imposes usage and redistribution restrictions, so it is not a portable
+default. FWR reports only whether the environment variable is present; it never sends, persists,
+logs, or prints the credential value in this milestone. Existing local
+ranking and CBS projection imports remain available; Logan's Parlay Play/CBS exports and database
+are neither bundled nor required.
 
 For an unattended setup:
 
@@ -48,6 +66,8 @@ working directory.
 
 ```console
 uv run fwr setup --username alice
+uv run fwr data bootstrap
+uv run fwr data bootstrap --force --json
 uv run fwr leagues list
 uv run fwr leagues use LEAGUE_ID
 uv run fwr context
@@ -107,6 +127,14 @@ uv run fwr rankings import rankings.csv \
 
 Rows resolve by explicit provider ID or exact normalized identity. Ambiguous and unresolved rows
 are preserved for inspection with `fwr rankings unresolved`; fuzzy matches are never accepted.
+
+All current recommendation models require an exact-scoring projection snapshot and a compatible
+ranking snapshot. `baseline-1.0` uses the portable model selection fallback but still requires
+both inputs because the current deterministic input builder calculates projection value and an
+expert-rank component. `trusted-board-1.0` and `trusted-board-1.1` likewise require both, and a
+selected strategy may additionally require an exact ranking source/model combination. ADP and
+schedule are optional market context today; `data bootstrap` acquiring them does not fabricate
+rankings or projections merely to turn readiness green.
 
 All finite commands accept `--json` and return a stable envelope with `status`, `command`, `data`,
 and `error`. In JSON mode stdout contains JSON only. `watch` remains the interactive continuous

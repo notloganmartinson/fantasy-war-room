@@ -21,6 +21,17 @@ local Codex CLI session over MCP:
 Sleeper -> fwr watch -> DuckDB snapshots -> FWR decision engine -> MCP -> Codex
 ```
 
+Portable source acquisition is a separate explicit CLI process:
+
+```text
+Fantasy Football Calculator / nflverse -> fwr data bootstrap -> immutable DuckDB snapshots
+```
+
+It never occurs in recommendation code or MCP. The bootstrap command uses the active synchronized
+league's exact season, team count, scoring format, and draft type. It currently automates ADP and
+schedule/byes only. Rankings and projections remain external, user-supplied data; FantasyPros is
+deferred because its official API requires approved credentials and restrictive terms.
+
 Fantasy War Room remains authoritative for draft state, identity, availability,
 roster allocation, rankings, projections, VORP, scarcity, recommendation
 scores, and provenance. Codex may synthesize those facts into conversational
@@ -147,9 +158,15 @@ the first release.
 Generate exact project-local configuration from the active league context:
 
 ```console
+uv run fwr data bootstrap
 uv run fwr draft-ready
 uv run fwr codex configure
 ```
+
+`data bootstrap` caches sanitized provider payloads under the XDG cache directory and persists
+normalized immutable snapshots with source URI/version/hash and fetch, observation, and import
+times. Fantasy Football Calculator asks API users to attribute its ADP data. nflverse schedule
+data is CC BY 4.0. Unresolved player rows remain explicit and fuzzy matching is never used.
 
 The ignored `.codex/config.toml` receives the active league's exact draft ID, resolved draft
 slot, ranking source, recommendation model, optional strategy, DuckDB path, and repository
@@ -726,7 +743,7 @@ The implemented first MCP milestone provides:
 - provider synchronization or write tools;
 - remote/HTTP MCP deployment and authentication;
 - MCP resources or prompts beyond server instructions;
-- ADP ingestion and calibrated next-pick survival probabilities;
+- calibrated next-pick survival probabilities using the now-ingested ADP context;
 - Monte Carlo draft simulation;
 - opponent modeling;
 - persistence of conversations or recommendations; and

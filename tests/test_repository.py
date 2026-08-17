@@ -76,7 +76,7 @@ def test_initialize_is_idempotent_and_records_ordered_migrations(tmp_path: Path)
     with duckdb.connect(str(repository.path)) as connection:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
         columns = connection.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'draft_snapshots' ORDER BY ordinal_position"
@@ -107,7 +107,7 @@ def test_legacy_m1_database_upgrades_without_data_loss(tmp_path: Path) -> None:
         ).fetchall() == [("s1", "p1")]
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,), (6,), (7,), (8,), (9,), (10,), (11,)]
         columns = connection.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_name = 'draft_snapshots' ORDER BY ordinal_position"

@@ -30,6 +30,7 @@ from fantasy_war_room.config import (
     save_settings,
     with_league_context,
 )
+from fantasy_war_room.data_bootstrap import bootstrap_data
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import (
     ConfigurationError,
@@ -89,6 +90,7 @@ adp_app = typer.Typer(help="Import and inspect immutable ADP snapshots.")
 schedules_app = typer.Typer(help="Import and inspect immutable team schedule snapshots.")
 leagues_app = typer.Typer(help="Inspect and switch saved Sleeper league contexts.")
 codex_app = typer.Typer(help="Configure the project-local Codex integration.")
+data_app = typer.Typer(help="Acquire and inspect portable football intelligence.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
@@ -98,8 +100,45 @@ app.add_typer(adp_app, name="adp")
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(leagues_app, name="leagues")
 app.add_typer(codex_app, name="codex")
+app.add_typer(data_app, name="data")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+@data_app.command("bootstrap")
+def data_bootstrap_command(
+    force: bool = typer.Option(False, "--force"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Acquire compatible public intelligence for the active league."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        ensure_directories(settings)
+        return bootstrap_data(
+            settings,
+            cache_dir=Path(app_dirs().user_cache_dir),
+            repository_root=REPOSITORY_ROOT,
+            force=force,
+        )
+
+    def render(result: dict[str, Any]) -> None:
+        stdout.print(
+            f"Active league {result['active_league_id']}: "
+            f"{result['format']['league_size']}-team "
+            f"{result['format']['scoring_format']} {result['format']['draft_type']}"
+        )
+        for name, source in result["sources"].items():
+            stdout.print(
+                f"{name}: {source['status']} — {source.get('provider', source.get('message'))}"
+            )
+        stdout.print(
+            "Recommendation readiness: "
+            + ("READY" if result["recommendation_ready"] else "NOT READY")
+        )
+
+    _run("data bootstrap", json_output, operation, render)
 
 
 @adp_app.command("import")

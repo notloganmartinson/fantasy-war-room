@@ -331,6 +331,17 @@ CREATE TABLE team_schedule_entries (
 );
 """
 
+MIGRATION_11 = """
+ALTER TABLE adp_snapshots ADD COLUMN source_uri VARCHAR;
+ALTER TABLE adp_snapshots ADD COLUMN fetched_at TIMESTAMPTZ;
+ALTER TABLE adp_snapshots ADD COLUMN source_payload_hash VARCHAR;
+ALTER TABLE adp_snapshots ADD COLUMN transformation_version VARCHAR;
+ALTER TABLE team_schedule_snapshots ADD COLUMN source_uri VARCHAR;
+ALTER TABLE team_schedule_snapshots ADD COLUMN fetched_at TIMESTAMPTZ;
+ALTER TABLE team_schedule_snapshots ADD COLUMN source_payload_hash VARCHAR;
+ALTER TABLE team_schedule_snapshots ADD COLUMN transformation_version VARCHAR;
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
@@ -342,6 +353,7 @@ MIGRATIONS = (
     (8, "standalone_draft_context", MIGRATION_8),
     (9, "immutable_adp_intelligence", MIGRATION_9),
     (10, "team_schedule_intelligence", MIGRATION_10),
+    (11, "portable_source_provenance", MIGRATION_11),
 )
 
 
@@ -1131,7 +1143,7 @@ class IntelligenceRepository(SnapshotRepository):
                     return False
                 connection.execute(
                     "INSERT INTO adp_snapshots VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         snapshot.adp_snapshot_id,
                         snapshot.source,
@@ -1150,6 +1162,10 @@ class IntelligenceRepository(SnapshotRepository):
                         snapshot.unresolved_row_count,
                         snapshot.ambiguous_row_count,
                         snapshot.schema_version,
+                        snapshot.source_uri,
+                        snapshot.fetched_at,
+                        snapshot.source_payload_hash,
+                        snapshot.transformation_version,
                     ],
                 )
                 for entry in entries:
@@ -1232,7 +1248,8 @@ class IntelligenceRepository(SnapshotRepository):
                     connection.rollback()
                     return False
                 connection.execute(
-                    "INSERT INTO team_schedule_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO team_schedule_snapshots VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         snapshot.schedule_snapshot_id,
                         snapshot.source,
@@ -1244,6 +1261,10 @@ class IntelligenceRepository(SnapshotRepository):
                         snapshot.original_filename,
                         snapshot.total_row_count,
                         snapshot.schema_version,
+                        snapshot.source_uri,
+                        snapshot.fetched_at,
+                        snapshot.source_payload_hash,
+                        snapshot.transformation_version,
                     ],
                 )
                 for entry in entries:

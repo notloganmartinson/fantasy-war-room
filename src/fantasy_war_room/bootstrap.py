@@ -307,6 +307,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             source=selected_source,
             resolution_policy=source_policy,
             compatible_sources=sources,
+            acquisition="user_supplied",
+            optional_provider="FantasyPros (credentials required; adapter not implemented)",
             snapshot_id=str(ranking[1]) if ranking else None,
         )
 
@@ -327,6 +329,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             else "Import projections for this league's exact scoring settings",
             source=PROJECTION_DEFAULT,
             snapshot_id=str(projection[0]) if projection else None,
+            acquisition="user_supplied",
+            optional_provider="FantasyPros (credentials required; adapter not implemented)",
         )
 
         scoring_key = ranking_scoring if ranking_scoring != "custom" else None
@@ -347,6 +351,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             else "Optional: import compatible ADP for market context",
             snapshot_id=str(adp[0]) if adp else None,
             source=str(adp[1]) if adp else None,
+            acquisition="automatic",
+            command="fwr data bootstrap",
         )
         schedule = connection.execute(
             "SELECT schedule_snapshot_id, source FROM team_schedule_snapshots "
@@ -362,6 +368,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             else "Optional: import team schedule/bye data",
             snapshot_id=str(schedule[0]) if schedule else None,
             source=str(schedule[1]) if schedule else None,
+            acquisition="automatic",
+            command="fwr data bootstrap",
         )
 
     model = effective.recommendation_model

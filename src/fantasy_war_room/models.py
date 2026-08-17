@@ -163,7 +163,7 @@ class RankingIssue(BaseModel):
 
 
 class AdpSnapshot(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     adp_snapshot_id: str
     source: str
     source_version: str
@@ -180,6 +180,10 @@ class AdpSnapshot(BaseModel):
     matched_row_count: int
     unresolved_row_count: int
     ambiguous_row_count: int
+    source_uri: str | None = None
+    fetched_at: datetime | None = None
+    source_payload_hash: str | None = None
+    transformation_version: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> AdpSnapshot:
@@ -201,6 +205,10 @@ class AdpSnapshot(BaseModel):
             unresolved_row_count=row[14],
             ambiguous_row_count=row[15],
             schema_version=row[16],
+            source_uri=row[17],
+            fetched_at=row[18],
+            source_payload_hash=row[19],
+            transformation_version=row[20],
         )
 
 
@@ -234,7 +242,7 @@ class AdpIssue(BaseModel):
 
 
 class TeamScheduleSnapshot(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     schedule_snapshot_id: str
     source: str
     source_version: str
@@ -244,6 +252,10 @@ class TeamScheduleSnapshot(BaseModel):
     payload_hash: str
     original_filename: str
     total_row_count: int
+    source_uri: str | None = None
+    fetched_at: datetime | None = None
+    source_payload_hash: str | None = None
+    transformation_version: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> TeamScheduleSnapshot:
@@ -258,6 +270,10 @@ class TeamScheduleSnapshot(BaseModel):
             original_filename=row[7],
             total_row_count=row[8],
             schema_version=row[9],
+            source_uri=row[10],
+            fetched_at=row[11],
+            source_payload_hash=row[12],
+            transformation_version=row[13],
         )
 
 
