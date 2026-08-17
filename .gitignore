@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+.codex/config.toml
 data/*.duckdb*
 data/*.wal*
 data/raw/

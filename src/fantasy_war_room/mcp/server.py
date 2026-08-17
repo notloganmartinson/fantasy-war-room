@@ -11,6 +11,7 @@ from typing import Any, cast
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
+from fantasy_war_room.bootstrap import resolve_effective_draft_configuration
 from fantasy_war_room.config import load_settings
 from fantasy_war_room.decision.models import OffensivePosition, RecommendationModelVersion
 from fantasy_war_room.errors import FwrError, InputError
@@ -105,8 +106,8 @@ def create_server(service: DraftCopilotService) -> MCPServer:
 
     @server.tool(annotations=READ_ONLY, structured_output=False)
     async def recommend_pick(
-        model: str = "trusted-board-1.1",
-        source: str = "parlay-play-hybrid",
+        model: str | None = None,
+        source: str | None = None,
         limit: int = 10,
         as_of: str | None = None,
     ) -> CallToolResult:
@@ -161,13 +162,18 @@ def _available_players(
 
 def _recommend_pick(
     service: DraftCopilotService,
-    model: str,
-    source: str,
+    model: str | None,
+    source: str | None,
     limit: int,
     as_of: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _limit(limit)
-    return service.recommend_pick(model=_model(model), source=source, limit=limit, as_of=as_of)
+    return service.recommend_pick(
+        model=_model(model) if model is not None else None,
+        source=source,
+        limit=limit,
+        as_of=as_of,
+    )
 
 
 def _call(
@@ -247,12 +253,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fwr-mcp")
     parser.add_argument("--draft-id", required=True)
     parser.add_argument("--draft-slot", type=int)
-    parser.add_argument("--source", default="parlay-play-hybrid")
+    parser.add_argument("--source")
     parser.add_argument("--adp-source", default="local-adp")
     parser.add_argument("--schedule-source", default="local-schedule")
     parser.add_argument(
         "--model",
-        default="trusted-board-1.1",
         choices=("baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"),
     )
     parser.add_argument("--database", type=Path)
@@ -263,17 +268,41 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     settings = load_settings(db_path=args.database)
-    selected_strategy = cast(str | None, args.strategy or settings.strategy)
+    effective = resolve_effective_draft_configuration(settings)
+    selected_strategy = cast(str | None, args.strategy or effective.strategy)
+    selected_profile = (
+        load_strategy_profile(selected_strategy) if selected_strategy is not None else None
+    )
+    selected_source = cast(
+        str | None,
+        args.source
+        or (
+            selected_profile.required_ranking_source
+            if args.strategy and selected_profile
+            else effective.ranking_source
+        ),
+    )
+    selected_model = cast(
+        str,
+        args.model
+        or (
+            selected_profile.required_raw_model
+            if args.strategy and selected_profile
+            else effective.recommendation_model
+        ),
+    )
+    if selected_source is None:
+        raise SystemExit(
+            "fwr-mcp requires --source or an active league context with ranking_source"
+        )
     service = DraftCopilotService(
         McpReadRepository(settings.db_path),
         draft_id=args.draft_id,
         sleeper_user_id=settings.sleeper_user_id,
         draft_slot=args.draft_slot,
-        default_source=args.source,
-        default_model=_model(args.model),
-        strategy_profile=(
-            load_strategy_profile(selected_strategy) if selected_strategy is not None else None
-        ),
+        default_source=selected_source,
+        default_model=_model(selected_model),
+        strategy_profile=selected_profile,
         default_adp_source=args.adp_source,
         default_schedule_source=args.schedule_source,
     )

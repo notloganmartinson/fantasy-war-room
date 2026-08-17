@@ -144,22 +144,37 @@ the first release.
 
 ## Configuration
 
-The server is configured once at process startup. MCP v1 requires
-`--draft-id`:
+Generate exact project-local configuration from the active league context:
+
+```console
+uv run fwr draft-ready
+uv run fwr codex configure
+```
+
+The ignored `.codex/config.toml` receives the active league's exact draft ID, resolved draft
+slot, ranking source, recommendation model, optional strategy, DuckDB path, and repository
+working directory. Generation owns an explicitly marked FWR block and preserves unrelated
+project configuration. Valid equivalent unmanaged tables, including quoted TOML keys, cause a
+safe error instead of an automatic rewrite; remove that table before allowing FWR to manage it.
+Malformed TOML is likewise never rewritten. Restart Codex in the trusted repository afterward.
+
+For manual startup, MCP v1 requires `--draft-id` and an explicit ranking source (or one selected
+in the active context):
 
 ```console
 fwr-mcp \
   --draft-id DRAFT_ID \
   [--draft-slot SLOT] \
-  [--source parlay-play-hybrid] \
-  [--model trusted-board-1.1] \
+  --source YOUR_COMPATIBLE_SOURCE \
+  [--model baseline-1.0] \
   [--strategy logan-ppr-2flex-1.0] \
   [--database PATH]
 ```
 
 The implemented startup parser requires `--draft-id`; accepts optional
-`--draft-slot`, `--source`, `--model`, and `--database`; and defaults source to
-`parlay-play-hybrid` and model to `trusted-board-1.1`. The database path falls
+`--draft-slot`, `--source`, `--model`, and `--database`; and resolves source and model from the
+active league context when omitted. There is no personalized source default; the portable model
+default is `baseline-1.0`. The database path falls
 back through the application's existing `FWR_DB_PATH`, user configuration, and
 XDG default behavior. MCP-specific environment variables are not implemented
 in v1. Explicit `recommend_pick` arguments may override source and model for
@@ -169,8 +184,8 @@ that call.
 precedence; an explicit startup slot is sufficient for a standalone mock
 without user ownership.
 
-`--strategy` also resolves through `FWR_MCP_STRATEGY`, then the application's
-active `strategy` setting. The initial profile requires draft slot 7,
+`--strategy` also resolves through `FWR_MCP_STRATEGY`, then the active league context's
+optional strategy. The initial profile requires draft slot 7,
 `trusted-board-1.1`, and `parlay-play-hybrid`; conflicting contexts return a
 structured error. Without a strategy, the original six-tool contract is
 unchanged.
@@ -538,9 +553,16 @@ args = [
   "fwr-mcp",
   "--draft-id",
   "DRAFT_ID",
-  "--strategy",
-  "logan-ppr-2flex-1.0",
+  "--draft-slot",
+  "SLOT",
+  "--source",
+  "YOUR_COMPATIBLE_SOURCE",
+  "--model",
+  "baseline-1.0",
+  "--database",
+  "/absolute/path/to/fantasy-war-room.duckdb",
 ]
+cwd = "/absolute/path/to/fantasy-war-room"
 startup_timeout_sec = 10
 tool_timeout_sec = 30
 required = false
@@ -677,8 +699,8 @@ The implemented first MCP milestone provides:
 4. every response identifies the snapshots and deterministic model used;
 5. drafted players cannot appear in an available-player response;
 6. `recommend_pick` is identical to the existing engine for the same inputs;
-7. `trusted-board-1.1` and `parlay-play-hybrid` are MCP defaults without
-   changing CLI defaults;
+7. MCP source/model selection comes from explicit startup arguments or the
+   active league context, with portable `baseline-1.0` as the non-personal model fallback;
 8. source/model overrides are explicit and never silent;
 9. no probability, ADP survival estimate, Monte Carlo result, or championship
    claim is produced;

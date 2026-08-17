@@ -5,25 +5,33 @@ snapshots in DuckDB, imports versioned ranking data, and reconstructs an availab
 as of a timezone-aware timestamp. Its deterministic recommendation engine can also serve a
 read-only local MCP draft copilot for Codex CLI.
 
-## Install and configure
+## Clean-clone onboarding
 
 Python 3.12 and [uv](https://docs.astral.sh/uv/) are required.
 
 ```console
+git clone https://github.com/notloganmartinson/fantasy-war-room.git
+cd fantasy-war-room
 uv sync
-uv run fwr configure --username YOUR_SLEEPER_USERNAME
-uv run fwr doctor
+uv run fwr setup --username YOUR_SLEEPER_USERNAME
+uv run fwr draft-ready
+uv run fwr codex configure
 ```
 
-Configuration, data, and cache use the operating system's user directories. On Linux these
-follow `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME`. A second person simply runs
-`fwr configure` with their own public Sleeper username; if they have several leagues, they can
-choose interactively or use `--league-id`. No repository edits or credentials are required.
+`setup` resolves the Sleeper account, selects a league, synchronizes its authoritative draft
+state, and refreshes the canonical player directory. With multiple leagues it prompts for one;
+automation must pass `--league-id`. An unpublished draft order is reported as pending and setup
+is safe to rerun.
+
+Sleeper connectivity and intelligence readiness are separate. A clean clone has no private
+ranking, projection, ADP, or schedule imports. `draft-ready` reports each missing input and does
+not claim `READY` until required compatible ranking and projection data exist.
 
 For an unattended setup:
 
 ```console
-uv run fwr configure --username alice --season 2026 --league-id 123456 --non-interactive --json
+uv run fwr setup --username alice --season 2026 --league-id 123456 \
+  --non-interactive --json
 ```
 
 Values can also be supplied with `FWR_SLEEPER_USERNAME`, `FWR_SLEEPER_LEAGUE_ID`, `FWR_SEASON`,
@@ -39,6 +47,12 @@ working directory.
 ## Commands
 
 ```console
+uv run fwr setup --username alice
+uv run fwr leagues list
+uv run fwr leagues use LEAGUE_ID
+uv run fwr context
+uv run fwr draft-ready --json
+uv run fwr codex configure --json
 uv run fwr discover
 uv run fwr drafts list
 uv run fwr sync
@@ -55,6 +69,16 @@ uv run fwr recommend --draft-id 987654 --draft-slot 7 \
   --strategy logan-ppr-2flex-1.0
 uv run fwr strategies show logan-ppr-2flex-1.0
 ```
+
+Each saved league context contains only local selections: provider, season, league ID, and
+optional ranking source, recommendation model, and strategy. Scoring, roster construction,
+draft order, and draft state come from Sleeper observations. Switching leagues does not leak
+preferences between them. Personalized strategies are opt-in; `logan-ppr-2flex-1.0` remains
+available but is never selected for a new league.
+
+The configured Sleeper user ID is the account boundary. Running setup or configure for a
+different resolved user clears the previous user's active league and saved league contexts while
+preserving machine settings such as the database path and polling interval.
 
 `drafts list` discovers both league-associated and standalone Sleeper drafts for the configured
 user. `sync --draft-id` and `watch --draft-id` operate on that exact draft instead of selecting a
@@ -100,10 +124,12 @@ uv run fwr watch --draft-id DRAFT_ID --scoring-context-league-id LEAGUE_ID
 ```
 
 The MCP server requires an explicit draft ID, reads DuckDB with short-lived read-only
-transactions, and never synchronizes or contacts a provider. Configure it in a trusted
-project-scoped `.codex/config.toml` using the template in
-[`docs/mcp-draft-copilot.md`](docs/mcp-draft-copilot.md). The default MCP policy is
-`trusted-board-1.1` with ranking source `parlay-play-hybrid`.
+transactions, and never synchronizes or contacts a provider. `fwr codex configure` writes an
+explicitly marked FWR-managed block in the ignored project-scoped `.codex/config.toml`, using the
+active context's exact draft, slot, source, model, optional strategy, database, and working
+directory. It preserves unrelated Codex configuration. An equivalent unmanaged FWR table must
+be removed manually before the command will take ownership. Restart Codex in the trusted
+repository afterward.
 
 Pass `--strategy logan-ppr-2flex-1.0` to enable the M3.5A deterministic strategy layer.
 The initial profile is compatible with draft slot 7 and preserves the complete raw

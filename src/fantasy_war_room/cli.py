@@ -4,18 +4,31 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from pydantic import ValidationError
 from rich.prompt import Prompt
 
+from fantasy_war_room.bootstrap import (
+    choose_league_id,
+    context_data,
+    generate_codex_config,
+    readiness,
+    resolve_effective_draft_configuration,
+)
+from fantasy_war_room.bootstrap import (
+    draft_slot as resolve_setup_draft_slot,
+)
 from fantasy_war_room.config import (
+    RecommendationModelSelection,
     app_dirs,
     config_file_path,
     ensure_directories,
+    for_resolved_sleeper_user,
     load_settings,
     save_settings,
+    with_league_context,
 )
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import (
@@ -74,6 +87,8 @@ drafts_app = typer.Typer(help="Discover Sleeper league and standalone drafts.")
 strategies_app = typer.Typer(help="Inspect and validate strategy profiles.")
 adp_app = typer.Typer(help="Import and inspect immutable ADP snapshots.")
 schedules_app = typer.Typer(help="Import and inspect immutable team schedule snapshots.")
+leagues_app = typer.Typer(help="Inspect and switch saved Sleeper league contexts.")
+codex_app = typer.Typer(help="Configure the project-local Codex integration.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
@@ -81,6 +96,10 @@ app.add_typer(drafts_app, name="drafts")
 app.add_typer(strategies_app, name="strategies")
 app.add_typer(adp_app, name="adp")
 app.add_typer(schedules_app, name="schedules")
+app.add_typer(leagues_app, name="leagues")
+app.add_typer(codex_app, name="codex")
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 @adp_app.command("import")
@@ -213,12 +232,20 @@ def _local_copilot(
     draft_id: str, draft_slot: int | None, db_path: Path | None
 ) -> DraftCopilotService:
     settings = load_settings(db_path=db_path)
+    effective = resolve_effective_draft_configuration(settings)
+    if effective.ranking_source is None:
+        raise ConfigurationError(
+            "ranking_source_required",
+            "Select a ranking source for the active league before using copilot helpers",
+        )
     return DraftCopilotService(
         McpReadRepository(settings.db_path),
         draft_id=draft_id,
         sleeper_user_id=settings.sleeper_user_id,
         draft_slot=draft_slot,
-        strategy_profile=load_strategy_profile("logan-ppr-2flex-1.0"),
+        default_source=effective.ranking_source,
+        default_model=effective.recommendation_model,
+        strategy_profile=effective.strategy_profile,
     )
 
 
@@ -324,9 +351,11 @@ def strategies_active(json_output: bool = typer.Option(False, "--json")) -> None
     def operation() -> dict[str, Any]:
         settings = load_settings()
         return {
-            "strategy": settings.strategy,
+            "strategy": settings.active_strategy,
             "profile": (
-                load_strategy_profile(settings.strategy) if settings.strategy is not None else None
+                load_strategy_profile(settings.active_strategy)
+                if settings.active_strategy is not None
+                else None
             ),
         }
 
@@ -424,32 +453,25 @@ def configure(
             user, leagues = discover_leagues(client, settings.sleeper_username, settings.season)
         finally:
             client.close()
-        chosen = settings.sleeper_league_id
+        account_settings = for_resolved_sleeper_user(
+            settings,
+            user_id=str(user["user_id"]),
+            username=str(user.get("username") or settings.sleeper_username),
+        )
         ids = [league.league_id for league in leagues]
-        if chosen and chosen not in ids:
-            raise ConfigurationError(
-                "league_not_available",
-                "League does not belong to this user and season",
-                {"available_league_ids": ids},
-            )
-        if not chosen:
-            if len(leagues) == 1:
-                chosen = leagues[0].league_id
-            elif not leagues:
-                raise ConfigurationError(
-                    "no_leagues", "No NFL leagues found for the selected season"
-                )
-            elif non_interactive or not typer.get_text_stream("stdin").isatty():
-                raise ConfigurationError(
-                    "league_selection_required",
-                    "Multiple leagues found; supply --league-id",
-                    {"available_league_ids": ids},
-                )
-            else:
-                render_leagues(leagues)
-                chosen = Prompt.ask("League ID", choices=ids, console=stdout)
-        configured = settings.model_copy(
-            update={"sleeper_user_id": str(user["user_id"]), "sleeper_league_id": chosen}
+        requested = league_id or account_settings.sleeper_league_id
+        chosen = choose_league_id(
+            ids,
+            requested,
+            non_interactive=non_interactive or not typer.get_text_stream("stdin").isatty(),
+        )
+        if chosen is None:
+            render_leagues(leagues)
+            chosen = Prompt.ask("League ID", choices=ids, console=stdout)
+        configured = with_league_context(
+            account_settings,
+            league_id=chosen,
+            season=settings.season,
         )
         ensure_directories(configured)
         path = save_settings(configured)
@@ -469,6 +491,176 @@ def configure(
         lambda result: stdout.print(
             f"Configured league {result['league_id']} in {result['config_file']}"
         ),
+    )
+
+
+@app.command("setup")
+def setup_command(
+    username: str | None = typer.Option(None),
+    season: str | None = typer.Option(None),
+    league_id: str | None = typer.Option(None, "--league-id"),
+    ranking_source: str | None = typer.Option(None, "--ranking-source"),
+    recommendation_model: str | None = typer.Option(None, "--recommendation-model"),
+    strategy: str | None = typer.Option(None, "--strategy"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    non_interactive: bool = typer.Option(False, "--non-interactive"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Configure, synchronize, and report the selected league's bootstrap state."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(sleeper_username=username, season=season, db_path=db_path)
+        client = _client(settings)
+        try:
+            user, leagues = discover_leagues(client, settings.sleeper_username, settings.season)
+            account_settings = for_resolved_sleeper_user(
+                settings,
+                user_id=str(user["user_id"]),
+                username=str(user.get("username") or settings.sleeper_username),
+            )
+            ids = [league.league_id for league in leagues]
+            requested = league_id or account_settings.active_league_id
+            selected = choose_league_id(
+                ids,
+                requested,
+                non_interactive=non_interactive or not typer.get_text_stream("stdin").isatty(),
+            )
+            if selected is None:
+                render_leagues(leagues)
+                selected = Prompt.ask("League ID", choices=ids, console=stdout)
+            configured = with_league_context(
+                account_settings,
+                league_id=selected,
+                season=settings.season,
+                ranking_source=ranking_source,
+                recommendation_model=cast(
+                    RecommendationModelSelection | None,
+                    recommendation_model,
+                ),
+                strategy=strategy,
+            )
+            ensure_directories(configured)
+            save_settings(configured)
+            repository = IntelligenceRepository(configured.db_path)
+            snapshot, draft_created = sync_draft(client, repository, selected)
+            player_snapshot, player_created, player_source = sync_players(
+                client,
+                repository,
+                Path(app_dirs().user_cache_dir),
+            )
+        finally:
+            client.close()
+        slot = resolve_setup_draft_slot(snapshot, configured.sleeper_user_id)
+        ready = readiness(configured, repository_root=REPOSITORY_ROOT)
+        return {
+            "schema_version": "1.0",
+            "config_file": str(config_file_path()),
+            "username": configured.sleeper_username,
+            "user_id": configured.sleeper_user_id,
+            "league_id": selected,
+            "season": configured.season,
+            "draft_id": snapshot.draft_id,
+            "draft_slot": slot,
+            "draft_slot_status": "pending" if slot is None else "resolved",
+            "draft_snapshot_created": draft_created,
+            "player_snapshot_id": player_snapshot.snapshot_id,
+            "player_snapshot_created": player_created,
+            "player_source": player_source,
+            "draft_ready": ready["ready"],
+            "readiness_checks": ready["checks"],
+        }
+
+    _run(
+        "setup",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            f"Configured league {result['league_id']} and synchronized draft "
+            f"{result['draft_id']} (slot {result['draft_slot_status']}). "
+            "Run fwr draft-ready for intelligence checks."
+        ),
+    )
+
+
+@leagues_app.command("list")
+def leagues_list(json_output: bool = typer.Option(False, "--json")) -> None:
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        return {
+            "schema_version": "1.0",
+            "active_league_id": settings.active_league_id,
+            "leagues": [
+                {
+                    **context.model_dump(mode="json"),
+                    "active": league_id == settings.active_league_id,
+                }
+                for league_id, context in sorted(settings.league_contexts.items())
+            ],
+        }
+
+    _run("leagues list", json_output, operation, lambda result: stdout.print(result))
+
+
+@leagues_app.command("use")
+def leagues_use(league_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        context = settings.league_contexts.get(league_id)
+        if context is None:
+            raise ConfigurationError(
+                "league_context_not_found",
+                "League context is not saved; run fwr setup --league-id first",
+                {"league_id": league_id, "available_league_ids": sorted(settings.league_contexts)},
+            )
+        selected = settings.model_copy(
+            update={
+                "active_league_id": league_id,
+                "sleeper_league_id": league_id,
+                "season": context.season,
+                "strategy": None,
+            }
+        )
+        save_settings(selected)
+        return context_data(selected)
+
+    _run(
+        "leagues use",
+        json_output,
+        operation,
+        lambda result: stdout.print(f"Active league: {result['active_league_id']}"),
+    )
+
+
+@app.command("context")
+def context_command(json_output: bool = typer.Option(False, "--json")) -> None:
+    _run(
+        "context",
+        json_output,
+        lambda: context_data(load_settings()),
+        lambda result: stdout.print(result),
+    )
+
+
+@app.command("draft-ready")
+def draft_ready_command(
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    _run(
+        "draft-ready",
+        json_output,
+        lambda: readiness(load_settings(db_path=db_path), repository_root=REPOSITORY_ROOT),
+        lambda result: stdout.print("READY" if result["ready"] else "NOT READY", result),
+    )
+
+
+@codex_app.command("configure")
+def codex_configure(json_output: bool = typer.Option(False, "--json")) -> None:
+    _run(
+        "codex configure",
+        json_output,
+        lambda: generate_codex_config(load_settings(), repository_root=REPOSITORY_ROOT),
+        lambda result: stdout.print(f"Wrote {result['path']}. Restart Codex in this repository."),
     )
 
 
@@ -959,12 +1151,20 @@ def recommend_command(
 
     def operation() -> Any:
         settings = load_settings(db_path=db_path)
-        selected_strategy = strategy or settings.strategy
-        profile = load_strategy_profile(selected_strategy) if selected_strategy else None
-        selected_model: RecommendationModelVersion = (
-            profile.required_raw_model if profile is not None else model
+        effective = resolve_effective_draft_configuration(settings)
+        profile = (
+            load_strategy_profile(strategy) if strategy is not None else effective.strategy_profile
         )
-        selected_source = profile.required_ranking_source if profile is not None else source
+        selected_model = (
+            profile.required_raw_model
+            if strategy is not None and profile is not None
+            else (effective.recommendation_model if model == "baseline-1.0" else model)
+        )
+        selected_source = source or (
+            profile.required_ranking_source
+            if strategy is not None and profile is not None
+            else effective.ranking_source
+        )
         if profile is not None and model != "baseline-1.0" and model != profile.required_raw_model:
             raise InputError(
                 "strategy_model_conflict",
