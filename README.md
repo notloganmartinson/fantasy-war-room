@@ -1,9 +1,65 @@
 # Fantasy War Room
 
-Fantasy War Room is a local-first CLI that records immutable Sleeper draft and player-directory
-snapshots in DuckDB, imports versioned ranking data, and reconstructs an available-player board
-as of a timezone-aware timestamp. Its deterministic recommendation engine can also serve a
-read-only local MCP draft copilot for Codex CLI.
+Fantasy War Room is a local-first fantasy-football decision system that combines live Sleeper
+league state, structured football data, deterministic analytics, probabilistic wait-cost
+modeling, and a read-only MCP copilot.
+
+Draft decisions depend on facts that change pick by pick, inputs that come from several sources,
+and the cost of waiting until your next turn. FWR normalizes those inputs into immutable,
+time-aware DuckDB snapshots, then produces reproducible recommendations and seeded simulated
+availability rates. A local MCP server lets supported AI clients inspect and explain those
+results without giving the language model ownership of draft state or calculations. Everything
+runs locally; synchronization remains an explicit CLI process.
+
+## What it does
+
+- Synchronizes live Sleeper league, roster, and draft state.
+- Ranks available players with deterministic VORP, scarcity, roster-effect, and provenance-aware
+  recommendation logic.
+- Adds compatible ADP market context and seeded next-pick simulated availability rates to show
+  the cost of waiting.
+- Replays decisions at explicit historical timestamps without leaking future observations.
+- Supports portable multi-league setup and exposes the results through a local, read-only MCP.
+
+## Architecture
+
+```text
+Sleeper ------------------------\
+Fantasy Football Calculator ----\
+nflverse ------------------------ > normalized, versioned data -> DuckDB
+user rankings / projections ----/                              |
+                                                              v
+                                         deterministic recommendation engine
+                                                              |
+                                         probabilistic survival / wait-cost model
+                                                              |
+                                                       read-only MCP
+                                                              |
+                                                     AI client
+```
+
+FWR owns the facts and calculations. The AI client interprets and explains them.
+
+## Demo
+
+**Video/GIF:** coming soon — add the public demo URL here.
+
+The recording script and reproducible setup are in the
+[60–90 second demo runbook](docs/demo-runbook.md).
+
+## Quick start
+
+See [Clean-clone onboarding](#clean-clone-onboarding) below. A clean clone can acquire compatible
+ADP and schedule/bye data automatically; rankings and projections remain explicit external or
+user-supplied inputs.
+
+## Why not just ask an LLM?
+
+An LLM is useful for interpreting tradeoffs, but it should not invent who is available, what a
+league scores, or how a recommendation was calculated. FWR deliberately separates authoritative
+source observations, identity normalization, deterministic analytics, probabilistic modeling,
+and optional personal strategy. AI clients reason over versioned MCP outputs with provenance
+while FWR remains the source of draft facts, rankings, projections, ADP, and simulation results.
 
 ## Clean-clone onboarding
 
@@ -38,12 +94,12 @@ the XDG cache directory, then stores normalized immutable observations in DuckDB
 URI/version, fetch/observation/import times, source and normalized payload hashes, identity
 resolver version, and deterministic transformation version. Use `--force` to bypass the cache.
 
-FantasyPros rankings and projections are not automatic in M4B. Its official API requires an
+FantasyPros rankings and projections are not acquired automatically. Its official API requires an
 approved private key and imposes usage and redistribution restrictions, so it is not a portable
 default. FWR reports only whether the environment variable is present; it never sends, persists,
 logs, or prints the credential value in this milestone. Existing local
-ranking and CBS projection imports remain available; Logan's Parlay Play/CBS exports and database
-are neither bundled nor required.
+ranking and CBS projection imports remain available; no private exports or user database are
+bundled or required.
 
 For an unattended setup:
 
@@ -149,6 +205,12 @@ failure, `4` Sleeper/network failure, and `5` resource not found.
 
 ## Local MCP draft copilot
 
+### MCP clients
+
+FWR exposes a standard local stdio MCP server. Codex is the primary tested integration; Claude
+Code can connect to the same server using its standard MCP CLI. See the
+[Claude Code setup guide](docs/claude-code.md). Other clients are not currently claimed as tested.
+
 Keep synchronization in a separate terminal:
 
 ```console
@@ -174,6 +236,21 @@ The initial profile is compatible with draft slot 7 and preserves the complete r
 startup also exposes `get_draft_strategy` and embeds the active profile in fresh-session
 instructions.
 
+## Limitations
+
+- Clean clones can automatically acquire compatible Fantasy Football Calculator ADP and nflverse
+  schedule/bye data, but compatible rankings and projections currently require external or
+  user-supplied files.
+- `adp-only-1.0` remains the default survival model because current historical evidence is
+  insufficient to justify a more complex default.
+- Simulated availability rates are outputs of a named model, not calibrated or ground-truth
+  probabilities.
+- Live provider support is currently limited to Sleeper NFL redraft snake drafts that are
+  single-quarterback and non-keeper. League size, scoring, roster construction, draft slot, and
+  round count are still derived from Sleeper rather than hard-coded.
+- The MCP is deliberately local, read-only, and network-free. Live synchronization runs through
+  a separate CLI process.
+
 ## Development
 
 ```console
@@ -182,10 +259,3 @@ uv run ruff check .
 uv run mypy src
 uv run pytest
 ```
-
-doctor: makes sure fwr is installed and configured correctly on the current machine
-discover: connect to Sleeper using configured username and finds your leagues
-- returns league name, league id, draft id, number of teams, league status and season
-sync: downloads current state of configured league and draft then considers saving it to DuckDB
-- retrieves league settings scoring settings roster positions draft metadata completed picks
-fetches the current draft state and save it only if something has changed

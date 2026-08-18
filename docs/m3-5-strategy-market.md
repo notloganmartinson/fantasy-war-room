@@ -2,7 +2,8 @@
 
 ## Status
 
-M3.5A and M3.5B Part 1 are implemented. Live news and calibrated simulation remain deferred.
+M3.5A and M3.5B Part 1 are implemented. M4C later added named-model simulated availability
+rates; live news and calibrated probability claims remain deferred.
 
 M3.5A adds a deterministic, configurable strategy layer after
 `trusted-board-1.1`, followed by immutable ADP intelligence and market timing.

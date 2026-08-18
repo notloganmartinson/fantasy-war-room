@@ -4,9 +4,11 @@
 
 Implemented as the first local read-only MCP draft copilot.
 
-The implemented baseline exposes six tools: `get_draft_state`,
+The server exposes nine tools by default: `get_draft_state`,
 `get_my_roster`, `get_available_players`, `recommend_pick`,
-`compare_players`, and `get_position_outlook`. Implemented M3.5A adds optional
+`compare_players`, `get_position_outlook`, `get_market_context`,
+`get_opponent_demand`, and `simulate_next_pick_survival`. An active strategy adds
+`get_draft_strategy`. Implemented M3.5A adds optional
 strategy-aware startup, dynamic profile instructions, strategy-adjusted
 `recommend_pick` output, and `get_draft_strategy`. M3.5B Part 1 adds read-only
 `get_market_context` and `get_opponent_demand` with coherent ADP and schedule
@@ -16,10 +18,10 @@ wait-cost tool.
 ## Goal
 
 Expose Fantasy War Room's synchronized, deterministic draft intelligence to a
-local Codex CLI session over MCP:
+local AI client over MCP:
 
 ```text
-Sleeper -> fwr watch -> DuckDB snapshots -> FWR decision engine -> MCP -> Codex
+Sleeper -> fwr watch -> DuckDB snapshots -> FWR decision engine -> MCP -> AI client
 ```
 
 Portable source acquisition is a separate explicit CLI process:
@@ -35,13 +37,17 @@ deferred because its official API requires approved credentials and restrictive 
 
 Fantasy War Room remains authoritative for draft state, identity, availability,
 roster allocation, rankings, projections, VORP, scarcity, recommendation
-scores, and provenance. Codex may synthesize those facts into conversational
+scores, and provenance. An AI client may synthesize those facts into conversational
 strategy, but it must label that synthesis as inference and must not replace an
 FWR fact with model memory.
 
-The first release is local, read-only, stdio-only, and draft-night focused. It
-does not synchronize data, contact Sleeper or another provider, write DuckDB,
-run Monte Carlo simulations, or estimate next-pick survival probabilities.
+The stdio server and its tool schemas are client-independent. Codex is the primary integration
+tested in this repository; Claude Code setup is documented in [claude-code.md](claude-code.md).
+
+The server is local, read-only, stdio-only, and draft-night focused. It does not
+synchronize data, contact Sleeper or another provider, or write DuckDB. It can run
+seeded next-pick simulations over already-persisted inputs and reports named-model
+simulated availability rates, not ground-truth probabilities.
 
 ## Boundary and safety model
 
@@ -205,8 +211,7 @@ without user ownership.
 `--strategy` also resolves through `FWR_MCP_STRATEGY`, then the active league context's
 optional strategy. The initial profile requires draft slot 7,
 `trusted-board-1.1`, and `parlay-play-hybrid`; conflicting contexts return a
-structured error. Without a strategy, the original six-tool contract is
-unchanged.
+structured error. Without a strategy, the nine default read-only tools remain available.
 
 The database path continues to use XDG configuration and `platformdirs`, not
 the process working directory. An absolute project path in the Codex
@@ -543,9 +548,11 @@ The full instructions are:
 11. When recommending a player, explain: why this player now; the closest
    alternatives; which position to prioritize afterward; and any tier or
    scarcity concern.
-12. Do not claim a player will definitely survive to the next pick. FWR has no
-    calibrated availability probability, so do not invent one.
-13. Do not imply that MCP synchronized the draft. When state appears stale,
+12. For serious alternatives, use `simulate_next_pick_survival` to evaluate wait cost. Keep its
+    named-model simulated availability rate separate from deterministic player quality, and do
+    not describe it as calibrated or ground truth.
+13. Do not claim a player will definitely survive to the next pick.
+14. Do not imply that MCP synchronized the draft. When state appears stale,
     tell the user to check the separate `fwr watch` process.
 
 Tool descriptions repeat the critical availability and no-probability
@@ -588,7 +595,7 @@ command = "uv"
 args = [
   "run",
   "--project",
-  "/home/el-ahrairah/fantasy-war-room",
+  "/absolute/path/to/fantasy-war-room",
   "fwr-mcp",
   "--draft-id",
   "DRAFT_ID",
@@ -613,6 +620,9 @@ enabled_tools = [
   "recommend_pick",
   "compare_players",
   "get_position_outlook",
+  "get_market_context",
+  "get_opponent_demand",
+  "simulate_next_pick_survival",
   "get_draft_strategy",
 ]
 ```
@@ -627,14 +637,14 @@ form remains:
 
 ```console
 codex mcp add fantasy-war-room -- \
-  uv run --project /home/el-ahrairah/fantasy-war-room \
+  uv run --project /absolute/path/to/fantasy-war-room \
   fwr-mcp --draft-id DRAFT_ID
 ```
 
 That global option is documented as opt-in, not the draft-night default.
 `codex mcp list` verifies registration; `/mcp` verifies the active server in a
 Codex session. The config uses `writes` approval behavior plus an allowlist of
-the six baseline tools plus `get_draft_strategy`. `required = false` prevents initialization
+the nine default tools and optional `get_draft_strategy`. `required = false` prevents initialization
 failure from blocking the project session. These forms follow the official
 Codex MCP documentation. The stdio entry point is integration-tested outside
 the repository working directory; project-scoped Codex configuration remains a
@@ -651,7 +661,7 @@ documented operator setup rather than an application parser feature.
   `sharp_tier_drop` for a null top tier;
 - deterministic player-name resolution and ambiguity handling;
 - server instructions contain every required behavioral rule; and
-- all six tools advertise read-only/non-destructive annotations.
+- all tools advertise read-only/non-destructive annotations.
 
 ### Read-only integration tests
 
@@ -705,7 +715,7 @@ the guarantees.
 - comparisons of available, drafted, missing, and ambiguous players;
 - partial projection provenance is retained;
 - position depth/scarcity/tier flags carry raw evidence;
-- no next-pick probability appears except the explicit uncalibrated state;
+- survival output is explicitly labeled as a named-model simulated availability rate;
 - same explicit `as_of`, snapshots, and arguments are byte-stable after
   canonical JSON serialization;
 - live calls with unchanged state preserve facts, scores, ordering, and
@@ -732,7 +742,7 @@ tests remain green. Unit and integration tests never use the public internet.
 
 The implemented first MCP milestone provides:
 
-1. all six tools return stable, versioned structured results;
+1. all tools return stable, versioned structured results;
 2. every database connection used by MCP is demonstrably read-only;
 3. no MCP code path imports or calls provider synchronization;
 4. every response identifies the snapshots and deterministic model used;
@@ -741,8 +751,8 @@ The implemented first MCP milestone provides:
 7. MCP source/model selection comes from explicit startup arguments or the
    active league context, with portable `baseline-1.0` as the non-personal model fallback;
 8. source/model overrides are explicit and never silent;
-9. no probability, ADP survival estimate, Monte Carlo result, or championship
-   claim is produced;
+9. survival results remain separate from recommendation quality and are never presented as
+   calibrated, ground-truth, or championship probabilities;
 10. every MCP call uses a bounded open/read/close lifecycle and reports
     `database_busy` after classified lock retries are exhausted;
 11. watcher-side retry eventually persists every observed state without a
@@ -754,7 +764,7 @@ The implemented first MCP milestone provides:
 15. MCP v1 requires an explicit draft ID;
 16. the tested MCP SDK release is pinned exactly in both project metadata and
     lockfile;
-17. the preferred project-scoped registration exposes exactly the six
+17. the preferred project-scoped registration exposes only the documented
     read-only tools and does not block unrelated Codex sessions;
 18. Codex can start and use the server outside the repository directory; and
 19. the documented draft-night workflow works end to end with Terminal 1
@@ -765,8 +775,8 @@ The implemented first MCP milestone provides:
 - provider synchronization or write tools;
 - remote/HTTP MCP deployment and authentication;
 - MCP resources or prompts beyond server instructions;
-- calibrated next-pick survival probabilities using the now-ingested ADP context;
-- Monte Carlo draft simulation;
-- opponent modeling;
+- evidence sufficient to promote a more complex survival model over `adp-only-1.0`;
+- full-draft simulation or simulation optimization;
+- learned opponent-specific pick models beyond the current positional-demand evidence;
 - persistence of conversations or recommendations; and
 - championship-probability evaluation.
