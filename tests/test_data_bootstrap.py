@@ -291,7 +291,7 @@ def test_active_context_is_required_before_bootstrap(tmp_path: Path) -> None:
 
 
 def test_credentials_are_reported_only_as_presence(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FWR_FANTASYPROS_API_KEY", "super-secret-value")
+    monkeypatch.setenv("FANTASYPROS_API_KEY", "super-secret-value")
     settings = Settings(
         active_league_id="l1",
         league_contexts={"l1": LeagueContext(league_id="l1", season="2026")},
@@ -329,7 +329,7 @@ def test_active_league_drives_bootstrap_and_unchanged_imports_are_idempotent(
             ),
         },
     )
-    monkeypatch.delenv("FWR_FANTASYPROS_API_KEY", raising=False)
+    monkeypatch.delenv("FANTASYPROS_API_KEY", raising=False)
     adp_url = f"{FFC_BASE_URL}/api/v1/adp/ppr?teams=2&year=2026"
     adp_route = respx_mock.get(adp_url).mock(
         return_value=httpx.Response(200, json=_ffc_payload(teams=2))
@@ -354,7 +354,7 @@ def test_active_league_drives_bootstrap_and_unchanged_imports_are_idempotent(
     assert first["sources"]["adp"]["unresolved"] == 1
     assert first["sources"]["team_schedule"]["status"] == "acquired"
     assert first["sources"]["rankings"]["credential"] == "absent"
-    assert second["sources"]["adp"]["status"] == "unchanged"
+    assert second["sources"]["adp"]["status"] == "unchanged", second["sources"]["adp"]
     assert second["sources"]["team_schedule"]["status"] == "unchanged"
     assert adp_route.call_count == schedule_route.call_count == 1
     assert first["recommendation_ready"] is True

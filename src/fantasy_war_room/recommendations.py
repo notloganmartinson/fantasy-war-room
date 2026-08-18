@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fantasy_war_room.decision.models import RecommendationModelVersion, RecommendationResult
-from fantasy_war_room.decision.recommend import recommend
+from fantasy_war_room.decision.models import (
+    PortableMarketRecommendationResult,
+    RecommendationModelVersion,
+    RecommendationResult,
+)
+from fantasy_war_room.decision.recommend import recommend, recommend_portable_market
 from fantasy_war_room.errors import InputError
 from fantasy_war_room.repository import IntelligenceRepository
 from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_compatibility
@@ -23,8 +27,28 @@ def build_recommendation(
     limit: int,
     model_version: RecommendationModelVersion = "baseline-1.0",
     strategy_profile: StrategyProfile | None = None,
-) -> RecommendationResult | StrategyRecommendationResult:
+) -> PortableMarketRecommendationResult | RecommendationResult | StrategyRecommendationResult:
     """Select immutable local inputs, run the chosen policy, then limit presentation."""
+    if model_version == "portable-market-1.0":
+        if strategy_profile is not None:
+            raise InputError(
+                "strategy_model_conflict",
+                "Portable market recommendations do not support projection-backed strategies",
+            )
+        portable_inputs = repository.portable_market_inputs(
+            at,
+            draft_id=draft_id,
+            league_id=league_id,
+            sleeper_user_id=sleeper_user_id,
+            draft_slot=draft_slot,
+        )
+        portable = recommend_portable_market(portable_inputs)
+        if not portable.candidates:
+            raise InputError(
+                "insufficient_market_depth",
+                "No available players have resolved compatible FFC market data",
+            )
+        return portable.model_copy(update={"candidates": portable.candidates[:limit]})
     inputs = repository.recommendation_inputs(
         at,
         draft_id=draft_id,

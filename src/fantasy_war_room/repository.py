@@ -15,6 +15,9 @@ from fantasy_war_room.decision.models import (
     DraftTurnContext,
     ExpertRankingInput,
     OffensivePosition,
+    PortableMarketPlayerInput,
+    PortableMarketProvenance,
+    PortableMarketRecommendationInputs,
     RecommendationInputs,
     RecommendationPlayerInput,
     RecommendationProvenance,
@@ -53,6 +56,8 @@ from fantasy_war_room.models import (
     AdpIssue,
     AdpSnapshot,
     BoardPlayer,
+    MarketBoardIssue,
+    MarketBoardSnapshot,
     PlayerDirectorySnapshot,
     PlayerSearchResult,
     ProjectionIssue,
@@ -360,6 +365,36 @@ ALTER TABLE team_schedule_snapshots ADD COLUMN source_payload_hash VARCHAR;
 ALTER TABLE team_schedule_snapshots ADD COLUMN transformation_version VARCHAR;
 """
 
+MIGRATION_12 = """
+CREATE TABLE market_board_snapshots (
+ market_board_snapshot_id VARCHAR PRIMARY KEY, source VARCHAR NOT NULL,
+ source_version VARCHAR NOT NULL, transformation_version VARCHAR NOT NULL,
+ derived_from_adp_snapshot_id VARCHAR NOT NULL UNIQUE,
+ season VARCHAR NOT NULL, league_size INTEGER NOT NULL, scoring_format VARCHAR NOT NULL,
+ draft_type VARCHAR NOT NULL, observed_at TIMESTAMPTZ NOT NULL,
+ fetched_at TIMESTAMPTZ, imported_at TIMESTAMPTZ NOT NULL,
+ payload_hash VARCHAR NOT NULL, source_uri VARCHAR, source_payload_hash VARCHAR,
+ identity_resolver_version VARCHAR NOT NULL, total_row_count INTEGER NOT NULL,
+ matched_row_count INTEGER NOT NULL, unresolved_row_count INTEGER NOT NULL,
+ ambiguous_row_count INTEGER NOT NULL, schema_version VARCHAR NOT NULL
+);
+CREATE TABLE market_board_entries (
+ market_board_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ canonical_player_id VARCHAR, source_player_name VARCHAR NOT NULL,
+ source_position VARCHAR, source_team VARCHAR, overall_market_rank INTEGER,
+ overall_adp DOUBLE NOT NULL, adp_sd DOUBLE, sample_size INTEGER,
+ match_status VARCHAR NOT NULL, match_method VARCHAR, raw_payload JSON NOT NULL,
+ PRIMARY KEY(market_board_snapshot_id, source_row_number)
+);
+CREATE TABLE market_board_match_issues (
+ market_board_snapshot_id VARCHAR NOT NULL, source_row_number INTEGER NOT NULL,
+ source_player_name VARCHAR NOT NULL, source_position VARCHAR, source_team VARCHAR,
+ match_status VARCHAR NOT NULL, reason VARCHAR NOT NULL,
+ candidate_player_ids JSON NOT NULL, raw_payload JSON NOT NULL,
+ PRIMARY KEY(market_board_snapshot_id, source_row_number)
+);
+"""
+
 MIGRATIONS = (
     (1, "initial_m1_schema", MIGRATION_1),
     (2, "repeatable_draft_states", MIGRATION_2),
@@ -372,6 +407,7 @@ MIGRATIONS = (
     (9, "immutable_adp_intelligence", MIGRATION_9),
     (10, "team_schedule_intelligence", MIGRATION_10),
     (11, "portable_source_provenance", MIGRATION_11),
+    (12, "portable_market_board", MIGRATION_12),
 )
 
 
@@ -1234,6 +1270,154 @@ class IntelligenceRepository(SnapshotRepository):
             ).fetchall()
         return [AdpSnapshot.from_row(row) for row in rows]
 
+    def adp_snapshot_data(
+        self, snapshot_id: str
+    ) -> tuple[AdpSnapshot, list[dict[str, Any]], list[AdpIssue]]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            snapshot_row = connection.execute(
+                "SELECT * FROM adp_snapshots WHERE adp_snapshot_id=?", [snapshot_id]
+            ).fetchone()
+            if snapshot_row is None:
+                raise NotFoundError(
+                    "ADP snapshot was not found",
+                    {"adp_snapshot_id": snapshot_id},
+                    code="adp_snapshot_not_found",
+                )
+            rows = connection.execute(
+                "SELECT source_row_number, canonical_player_id, source_player_name, "
+                "source_position, source_team, overall_adp, adp_sd, sample_size, match_status, "
+                "match_method, raw_payload FROM adp_entries WHERE adp_snapshot_id=? "
+                "ORDER BY source_row_number",
+                [snapshot_id],
+            ).fetchall()
+            issue_rows = connection.execute(
+                "SELECT * FROM adp_match_issues WHERE adp_snapshot_id=? ORDER BY source_row_number",
+                [snapshot_id],
+            ).fetchall()
+        entries = [
+            {
+                "source_row_number": row[0],
+                "canonical_player_id": row[1],
+                "player_name": row[2],
+                "position": row[3],
+                "team": row[4],
+                "overall_adp": row[5],
+                "adp_sd": row[6],
+                "sample_size": row[7],
+                "match_status": row[8],
+                "match_method": row[9],
+                "raw_payload": json.loads(row[10]),
+            }
+            for row in rows
+        ]
+        return (
+            AdpSnapshot.from_row(snapshot_row),
+            entries,
+            [AdpIssue.from_row(row) for row in issue_rows],
+        )
+
+    def market_board_for_adp(self, adp_snapshot_id: str) -> MarketBoardSnapshot | None:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            row = connection.execute(
+                "SELECT * FROM market_board_snapshots WHERE derived_from_adp_snapshot_id=?",
+                [adp_snapshot_id],
+            ).fetchone()
+        return MarketBoardSnapshot.from_row(row) if row is not None else None
+
+    def insert_market_board_snapshot(
+        self,
+        snapshot: MarketBoardSnapshot,
+        entries: list[dict[str, Any]],
+        issues: list[MarketBoardIssue],
+    ) -> bool:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            connection.begin()
+            try:
+                existing = connection.execute(
+                    "SELECT 1 FROM market_board_snapshots WHERE derived_from_adp_snapshot_id=?",
+                    [snapshot.derived_from_adp_snapshot_id],
+                ).fetchone()
+                if existing:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "INSERT INTO market_board_snapshots VALUES (" + ", ".join(["?"] * 21) + ")",
+                    [
+                        snapshot.market_board_snapshot_id,
+                        snapshot.source,
+                        snapshot.source_version,
+                        snapshot.transformation_version,
+                        snapshot.derived_from_adp_snapshot_id,
+                        snapshot.season,
+                        snapshot.league_size,
+                        snapshot.scoring_format,
+                        snapshot.draft_type,
+                        snapshot.observed_at,
+                        snapshot.fetched_at,
+                        snapshot.imported_at,
+                        snapshot.payload_hash,
+                        snapshot.source_uri,
+                        snapshot.source_payload_hash,
+                        snapshot.identity_resolver_version,
+                        snapshot.total_row_count,
+                        snapshot.matched_row_count,
+                        snapshot.unresolved_row_count,
+                        snapshot.ambiguous_row_count,
+                        snapshot.schema_version,
+                    ],
+                )
+                for entry in entries:
+                    connection.execute(
+                        "INSERT INTO market_board_entries VALUES (" + ", ".join(["?"] * 13) + ")",
+                        [
+                            snapshot.market_board_snapshot_id,
+                            entry["source_row_number"],
+                            entry["canonical_player_id"],
+                            entry["player_name"],
+                            entry.get("position"),
+                            entry.get("team"),
+                            entry.get("overall_market_rank"),
+                            entry["overall_adp"],
+                            entry.get("adp_sd"),
+                            entry.get("sample_size"),
+                            entry["match_status"],
+                            entry.get("match_method"),
+                            json.dumps(entry["raw_payload"], sort_keys=True),
+                        ],
+                    )
+                for issue in issues:
+                    connection.execute(
+                        "INSERT INTO market_board_match_issues VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [
+                            issue.market_board_snapshot_id,
+                            issue.source_row_number,
+                            issue.source_player_name,
+                            issue.source_position,
+                            issue.source_team,
+                            issue.match_status,
+                            issue.reason,
+                            json.dumps(issue.candidate_player_ids),
+                            json.dumps(issue.raw_payload, sort_keys=True),
+                        ],
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return True
+
+    def market_board_snapshots(self) -> list[MarketBoardSnapshot]:
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM market_board_snapshots "
+                "ORDER BY observed_at DESC, imported_at DESC, market_board_snapshot_id DESC"
+            ).fetchall()
+        return [MarketBoardSnapshot.from_row(row) for row in rows]
+
     def adp_issues(self, snapshot_id: str | None = None) -> list[AdpIssue]:
         self.initialize()
         with duckdb.connect(str(self.path)) as connection:
@@ -1727,6 +1911,177 @@ class IntelligenceRepository(SnapshotRepository):
                 projection_player_snapshot_id=projection.player_snapshot_id,
                 projection_league_snapshot_id=projection.league_snapshot_id,
                 scoring_context_league_id=draft_snapshot.scoring_context_league_id,
+            ),
+        )
+
+    def portable_market_inputs(
+        self,
+        at: datetime,
+        *,
+        draft_id: str | None,
+        league_id: str | None,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+    ) -> PortableMarketRecommendationInputs:
+        """Build projection-free inputs from one exact compatible derived FFC market board."""
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            draft_row = _select_recommendation_draft(connection, at, draft_id, league_id)
+            snapshot = _snapshot_from_row(draft_row)
+            scoring_context = snapshot.scoring_context
+            if scoring_context is None or snapshot.scoring_context_league_id is None:
+                raise ConfigurationError(
+                    "mock_scoring_context_required",
+                    "Standalone draft has no explicit league scoring context",
+                    {"draft_id": snapshot.draft_id},
+                )
+            scoring = scoring_context.get("scoring_settings")
+            if not isinstance(scoring, dict):
+                raise InputError(
+                    "incompatible_scoring_context",
+                    "Selected draft scoring context has no scoring settings",
+                    {"draft_id": snapshot.draft_id},
+                )
+            try:
+                normalized_scoring = {str(key): float(value) for key, value in scoring.items()}
+            except (TypeError, ValueError) as exc:
+                raise InputError(
+                    "incompatible_scoring_context",
+                    "Selected draft scoring settings contain a nonnumeric value",
+                    {"draft_id": snapshot.draft_id},
+                ) from exc
+            season = str(snapshot.draft.get("season") or "")
+            team_count, rounds, draft_type = _recommendation_draft_settings(snapshot)
+            league_type, keeper_status = _recommendation_league_format(scoring_context)
+            scoring_format = _recommendation_scoring_format(normalized_scoring)
+            market_scoring = {
+                "full_ppr": "ppr",
+                "half_ppr": "half_ppr",
+                "standard": "standard",
+            }.get(scoring_format)
+            if market_scoring is None:
+                raise InputError(
+                    "unsupported_adp_scoring_format",
+                    "Portable market recommendations require an exact "
+                    "FFC-compatible scoring format",
+                    {"scoring_format": scoring_format},
+                )
+            player_row = connection.execute(
+                "SELECT snapshot_id, observed_at, fetched_at FROM player_directory_snapshots "
+                "WHERE provider='sleeper' AND sport='nfl' AND observed_at<=? AND fetched_at<=? "
+                "ORDER BY observed_at DESC, fetched_at DESC, snapshot_id DESC LIMIT 1",
+                [at, at],
+            ).fetchone()
+            if player_row is None:
+                raise NotFoundError(
+                    "No eligible player-directory snapshot exists as of the decision time",
+                    {"as_of": at.isoformat()},
+                    code="missing_player_snapshot",
+                )
+            board_row = connection.execute(
+                "SELECT * FROM market_board_snapshots WHERE observed_at<=? AND imported_at<=? "
+                "AND season=? AND league_size=? AND scoring_format=? AND draft_type=? "
+                "AND source='fantasy-football-calculator-market-board' "
+                "AND transformation_version='ffc-adp-to-market-board-1.0' "
+                "ORDER BY observed_at DESC, imported_at DESC, market_board_snapshot_id DESC "
+                "LIMIT 1",
+                [at, at, season, team_count, market_scoring, draft_type],
+            ).fetchone()
+            if board_row is None:
+                raise NotFoundError(
+                    "No exact compatible portable market board exists as of the decision time",
+                    {
+                        "as_of": at.isoformat(),
+                        "season": season,
+                        "league_size": team_count,
+                        "scoring_format": market_scoring,
+                        "draft_type": draft_type,
+                    },
+                    code="missing_compatible_market_board",
+                )
+            board = MarketBoardSnapshot.from_row(board_row)
+            provider_rows = connection.execute(
+                "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
+                "WHERE provider='sleeper' AND first_observed_at<=? ORDER BY provider_player_id",
+                [player_row[1]],
+            ).fetchall()
+            sleeper_to_canonical = {
+                str(provider_id): str(canonical_id) for canonical_id, provider_id in provider_rows
+            }
+            canonical_to_sleepers: dict[str, list[str]] = {}
+            for provider_id, canonical_id in sleeper_to_canonical.items():
+                canonical_to_sleepers.setdefault(canonical_id, []).append(provider_id)
+            resolved_slot = _resolve_recommendation_draft_slot(
+                snapshot, draft_slot, sleeper_user_id
+            )
+            completed, unresolved = _recommendation_picks(
+                snapshot, resolved_slot, sleeper_to_canonical
+            )
+            rows = connection.execute(
+                "SELECT e.canonical_player_id, min(ids.provider_player_id), "
+                "trim(any_value(o.first_name) || ' ' || any_value(o.last_name)), "
+                "upper(any_value(o.position)), any_value(o.team), e.overall_market_rank, "
+                "e.overall_adp, e.adp_sd FROM market_board_entries e "
+                "JOIN player_observations o ON o.snapshot_id=? "
+                "AND o.canonical_player_id=e.canonical_player_id "
+                "LEFT JOIN player_provider_ids ids ON "
+                "ids.canonical_player_id=e.canonical_player_id "
+                "AND ids.provider='sleeper' AND ids.first_observed_at<=? "
+                "WHERE e.market_board_snapshot_id=? "
+                "AND e.match_status='matched' AND e.overall_market_rank IS NOT NULL "
+                "GROUP BY e.canonical_player_id, e.overall_market_rank, e.overall_adp, e.adp_sd "
+                "ORDER BY e.overall_market_rank, e.canonical_player_id",
+                [player_row[0], player_row[1], board.market_board_snapshot_id],
+            ).fetchall()
+        market_players = tuple(
+            PortableMarketPlayerInput(
+                canonical_player_id=str(row[0]),
+                sleeper_player_id=str(row[1]) if row[1] is not None else None,
+                player_name=str(row[2]),
+                position=cast(OffensivePosition, str(row[3])),
+                team=str(row[4]) if row[4] is not None else None,
+                overall_market_rank=int(row[5]),
+                overall_adp=float(row[6]),
+                adp_sd=float(row[7]) if row[7] is not None else None,
+            )
+            for row in rows
+            if str(row[3]) in {"QB", "RB", "WR", "TE"}
+        )
+        return PortableMarketRecommendationInputs(
+            decision_at=at,
+            team_count=team_count,
+            draft_type=draft_type,
+            draft_rounds=rounds,
+            draft_slot=resolved_slot,
+            roster=_recommendation_roster_configuration(scoring_context),
+            completed_picks=completed,
+            market_players=market_players,
+            unresolved_roster_player_ids=unresolved,
+            league_type=league_type,
+            keeper_status=keeper_status,
+            scoring_format=scoring_format,
+            provenance=PortableMarketProvenance(
+                draft_snapshot_id=snapshot.snapshot_id,
+                draft_observed_at=snapshot.observed_at,
+                player_snapshot_id=str(player_row[0]),
+                player_observed_at=player_row[1],
+                player_fetched_at=player_row[2],
+                market_board_snapshot_id=board.market_board_snapshot_id,
+                market_board_source=board.source,
+                market_board_source_version=board.source_version,
+                market_board_transformation_version=board.transformation_version,
+                market_board_observed_at=board.observed_at,
+                market_board_fetched_at=board.fetched_at,
+                market_board_imported_at=board.imported_at,
+                market_board_payload_hash=board.payload_hash,
+                source_uri=board.source_uri,
+                source_payload_hash=board.source_payload_hash,
+                derived_from_adp_snapshot_id=board.derived_from_adp_snapshot_id,
+                identity_resolver_version=board.identity_resolver_version,
+                market_board_matched_row_count=board.matched_row_count,
+                market_board_unresolved_row_count=board.unresolved_row_count,
+                market_board_ambiguous_row_count=board.ambiguous_row_count,
+                scoring_context_league_id=snapshot.scoring_context_league_id,
             ),
         )
 

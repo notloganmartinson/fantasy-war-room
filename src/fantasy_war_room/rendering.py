@@ -164,6 +164,30 @@ def render_board(players: list[Any]) -> None:
 
 
 def render_recommendation(result: Any) -> None:
+    if getattr(result, "recommendation_model_version", None) == "portable-market-1.0":
+        context = result.turn_context
+        status = "ON THE CLOCK" if context.on_the_clock else "waiting"
+        stdout.print("[bold]Model:[/bold] portable-market-1.0 (projection-backed: no)")
+        stdout.print(
+            f"[bold]Round {context.current_round}, pick {context.next_overall_pick}[/bold] "
+            f"({status}); your next pick: {context.user_next_scheduled_pick}"
+        )
+        table = Table(title="Portable market recommendations")
+        for heading in ("#", "Player", "Pos", "Team", "Market rank", "FFC ADP"):
+            table.add_column(heading)
+        for candidate in result.candidates:
+            table.add_row(
+                str(candidate.recommendation_rank),
+                candidate.player_name,
+                candidate.position,
+                candidate.team or "-",
+                str(candidate.overall_market_rank),
+                _display_number(candidate.overall_adp),
+            )
+        stdout.print(table)
+        for limitation in result.limitations:
+            stdout.print(f"[yellow]Limitation:[/yellow] {limitation}")
+        return
     if hasattr(result, "raw_recommendation"):
         stdout.print(
             f"[bold]Strategy:[/bold] {result.strategy_provenance.profile_name} "

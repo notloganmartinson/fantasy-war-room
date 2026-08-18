@@ -30,7 +30,7 @@ from fantasy_war_room.config import (
     save_settings,
     with_league_context,
 )
-from fantasy_war_room.data_bootstrap import bootstrap_data
+from fantasy_war_room.data_bootstrap import bootstrap_data, data_status
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import (
@@ -144,6 +144,66 @@ def data_bootstrap_command(
         )
 
     _run("data bootstrap", json_output, operation, render)
+
+
+@data_app.command("refresh")
+def data_refresh_command(
+    force: bool = typer.Option(False, "--force"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Refresh portable public intelligence for the active league."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        ensure_directories(settings)
+        client = _client(settings)
+        try:
+            player, created, source = sync_players(
+                client,
+                IntelligenceRepository(settings.db_path),
+                Path(app_dirs().user_cache_dir),
+                force=force,
+            )
+        finally:
+            client.close()
+        result = bootstrap_data(
+            settings,
+            cache_dir=Path(app_dirs().user_cache_dir),
+            repository_root=REPOSITORY_ROOT,
+            force=force,
+        )
+        result["sources"]["player_directory"] = {
+            "status": "acquired" if created else "unchanged",
+            "provider": "sleeper",
+            "snapshot_id": player.snapshot_id,
+            "source": source,
+        }
+        return result
+
+    _run(
+        "data refresh",
+        json_output,
+        operation,
+        lambda result: stdout.print(
+            "Portable intelligence refreshed; recommendation readiness: "
+            + ("READY" if result["recommendation_ready"] else "NOT READY")
+        ),
+    )
+
+
+@data_app.command("status")
+def data_status_command(
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Report compatible local intelligence and recommendation readiness."""
+    _run(
+        "data status",
+        json_output,
+        lambda: data_status(load_settings(db_path=db_path), repository_root=REPOSITORY_ROOT),
+        lambda result: stdout.print(result),
+    )
 
 
 @adp_app.command("import")
@@ -1254,7 +1314,7 @@ def recommend_command(
     draft_id: str | None = typer.Option(None, "--draft-id"),
     draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
     source: str | None = typer.Option(None, "--source"),
-    model: RecommendationModelVersion = typer.Option("baseline-1.0", "--model"),
+    model: RecommendationModelVersion | None = typer.Option(None, "--model"),
     strategy: str | None = typer.Option(None, "--strategy"),
     limit: int = typer.Option(10, "--limit", min=1),
     as_of: str | None = typer.Option(None, "--as-of"),
@@ -1272,14 +1332,14 @@ def recommend_command(
         selected_model = (
             profile.required_raw_model
             if strategy is not None and profile is not None
-            else (effective.recommendation_model if model == "baseline-1.0" else model)
+            else (model or effective.recommendation_model)
         )
         selected_source = source or (
             profile.required_ranking_source
             if strategy is not None and profile is not None
             else effective.ranking_source
         )
-        if profile is not None and model != "baseline-1.0" and model != profile.required_raw_model:
+        if profile is not None and model is not None and model != profile.required_raw_model:
             raise InputError(
                 "strategy_model_conflict",
                 "Explicit recommendation model conflicts with the strategy profile",

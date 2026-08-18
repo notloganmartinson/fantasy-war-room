@@ -463,8 +463,9 @@ def test_noninteractive_setup_clean_clone_is_explicitly_not_ready(
     assert data["draft_ready"] is False
     assert load_settings().active_strategy is None
     names = {check["name"]: check for check in data["readiness_checks"]}
-    assert names["compatible_ranking"]["status"] == "fail"
-    assert names["compatible_projection"]["status"] == "fail"
+    assert names["compatible_ranking"]["status"] == "skipped"
+    assert names["compatible_projection"]["status"] == "skipped"
+    assert names["compatible_market_board"]["status"] == "fail"
     with pytest.raises(Exception) as raised:
         generate_codex_config(load_settings(), repository_root=xdg.parent / "project")
     assert raised.value.code == "codex_context_incomplete"

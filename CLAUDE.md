@@ -7,7 +7,8 @@ Read [README.md](README.md) for the product overview and
 
 Fantasy War Room owns authoritative draft facts and calculations. When its MCP tools are
 available, use them for fantasy-football decisions instead of model memory. Call
-`recommend_pick` first for deterministic recommendation quality; use
+`recommend_pick` first for the configured deterministic recommendation: portable mode is an
+explicit FFC market-order baseline, while projection-backed models add valuation analytics. Use
 `simulate_next_pick_survival` separately for wait cost. Describe its output as a **simulated
 availability rate**, never a calibrated probability.
 

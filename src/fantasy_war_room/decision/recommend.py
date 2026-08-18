@@ -13,6 +13,10 @@ from fantasy_war_room.decision.models import (
     NextPickAvailability,
     OffensivePosition,
     PlayerReassignment,
+    PortableMarketCandidate,
+    PortableMarketRecommendationInputs,
+    PortableMarketRecommendationResult,
+    PortableRosterContext,
     PositionalScarcity,
     ProjectionValueKind,
     RecommendationBaselines,
@@ -57,6 +61,83 @@ TRUSTED_BOARD_1_1_POLICY = RecommendationPolicy(
     trusted_tier_weight=15.0,
     nonlinear_trusted_rank=True,
 )
+
+
+def recommend_portable_market(
+    inputs: PortableMarketRecommendationInputs,
+) -> PortableMarketRecommendationResult:
+    """Follow exact compatible FFC market order without manufacturing projection value."""
+    if inputs.draft_type.casefold() != "snake":
+        raise InputError(
+            "unsupported_draft_format",
+            "portable-market-1.0 supports snake drafts only",
+            {"draft_type": inputs.draft_type},
+        )
+    if inputs.roster.qb != 1:
+        raise InputError(
+            "unsupported_roster_format",
+            "portable-market-1.0 supports exactly one starting quarterback",
+            {"starting_qb_slots": inputs.roster.qb},
+        )
+    turn = calculate_turn_context(cast(RecommendationInputs, inputs))
+    drafted_ids = {
+        pick.canonical_player_id
+        for pick in inputs.completed_picks
+        if pick.canonical_player_id is not None
+    }
+    user_picks = [pick for pick in inputs.completed_picks if pick.draft_slot == inputs.draft_slot]
+    position_counts: dict[str, int] = {}
+    for pick in user_picks:
+        position = (pick.position or "UNKNOWN").upper()
+        position_counts[position] = position_counts.get(position, 0) + 1
+    available = [
+        player for player in inputs.market_players if player.canonical_player_id not in drafted_ids
+    ]
+    available.sort(
+        key=lambda player: (
+            player.overall_market_rank,
+            player.player_name.casefold(),
+            player.canonical_player_id,
+        )
+    )
+    candidates = tuple(
+        PortableMarketCandidate(
+            recommendation_rank=index,
+            canonical_player_id=player.canonical_player_id,
+            sleeper_player_id=player.sleeper_player_id,
+            player_name=player.player_name,
+            position=player.position,
+            team=player.team,
+            overall_market_rank=player.overall_market_rank,
+            overall_adp=player.overall_adp,
+            adp_sd=player.adp_sd,
+        )
+        for index, player in enumerate(available, start=1)
+    )
+    return PortableMarketRecommendationResult(
+        decision_at=inputs.decision_at,
+        turn_context=turn,
+        roster_context=PortableRosterContext(
+            drafted_position_counts=dict(sorted(position_counts.items())),
+            starting_roster_requirements=inputs.roster,
+            unresolved_user_pick_count=len(inputs.unresolved_roster_player_ids),
+        ),
+        candidates=candidates,
+        provenance=inputs.provenance,
+        excluded_candidate_counts={
+            "drafted": len(drafted_ids & {p.canonical_player_id for p in inputs.market_players}),
+            "unresolved_market_identity": inputs.provenance.market_board_unresolved_row_count,
+            "ambiguous_market_identity": inputs.provenance.market_board_ambiguous_row_count,
+        },
+        limitations=(
+            "Portable recommendation is a compatible FFC market-order baseline, not a "
+            "projection-backed player valuation.",
+            "Projected points, VORP, replacement projections, scarcity projections, and "
+            "starter projection effects are intentionally unavailable.",
+            "Next-pick survival is separate wait-cost evidence and is not included in this "
+            "deterministic ordering.",
+        ),
+    )
 
 
 def recommend(

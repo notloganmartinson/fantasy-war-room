@@ -3,6 +3,7 @@ name = "fantasy-war-room"
 version = "0.1.0"
 description = "A time-aware, probabilistic fantasy football draft copilot"
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "notloganmartinson", email = "loganmarty22@icloud.com" }
 ]

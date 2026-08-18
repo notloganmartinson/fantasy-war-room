@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +18,7 @@ from fantasy_war_room.external_sources import (
     PublicIntelligenceAdapter,
     classify_ffc_scoring,
 )
+from fantasy_war_room.market_board import derive_market_board
 from fantasy_war_room.market_imports import import_adp_frame, import_team_schedule_frame
 from fantasy_war_room.models import Snapshot
 from fantasy_war_room.repository import (
@@ -137,16 +138,13 @@ def bootstrap_data(
     finally:
         if owned_provider:
             source_provider.close()
-    credential_present = bool(os.environ.get("FWR_FANTASYPROS_API_KEY"))
     optional_message = (
-        "FantasyPros automatic acquisition is not implemented; use the existing import command"
-        if credential_present
-        else "No portable provider is configured; optional FantasyPros access requires credentials"
+        "Optional FantasyPros acquisition is not implemented; use compatible manual imports"
     )
     results["rankings"] = {
         "status": "provider_not_configured",
+        "credential": "absent",
         "automatic": False,
-        "credential": "present" if credential_present else "absent",
         "message": optional_message,
     }
     results["projections"] = dict(results["rankings"])
@@ -164,6 +162,145 @@ def bootstrap_data(
         "sources": results,
         "recommendation_ready": ready["ready"],
         "readiness_checks": ready["checks"],
+    }
+
+
+def data_status(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
+    repository = IntelligenceRepository(settings.db_path)
+    context = active_intelligence_context(settings, repository)
+    now = datetime.now(UTC)
+    scoring = None
+    with suppress(InputError, KeyError):
+        scoring = {
+            "full_ppr": "ppr",
+            "half_ppr": "half_ppr",
+            "standard": "standard",
+        }[classify_ffc_scoring(context.scoring_settings)]
+    with duckdb.connect(str(repository.path), read_only=True) as connection:
+        player = connection.execute(
+            "SELECT snapshot_id, observed_at, fetched_at, schema_version "
+            "FROM player_directory_snapshots "
+            "WHERE provider='sleeper' AND sport='nfl' "
+            "ORDER BY observed_at DESC, fetched_at DESC LIMIT 1"
+        ).fetchone()
+        adp = board = None
+        if scoring is not None:
+            adp = connection.execute(
+                "SELECT adp_snapshot_id, source, source_version, observed_at, fetched_at, "
+                "imported_at FROM adp_snapshots WHERE season=? AND league_size=? "
+                "AND scoring_format=? AND draft_type=? ORDER BY observed_at DESC, imported_at DESC "
+                "LIMIT 1",
+                [context.season, context.league_size, scoring, context.draft_type],
+            ).fetchone()
+            board = connection.execute(
+                "SELECT market_board_snapshot_id, source, source_version, observed_at, fetched_at, "
+                "imported_at FROM market_board_snapshots WHERE season=? AND league_size=? "
+                "AND scoring_format=? AND draft_type=? "
+                "AND source='fantasy-football-calculator-market-board' "
+                "AND transformation_version='ffc-adp-to-market-board-1.0' "
+                "ORDER BY observed_at DESC, imported_at DESC "
+                "LIMIT 1",
+                [context.season, context.league_size, scoring, context.draft_type],
+            ).fetchone()
+        schedule = connection.execute(
+            "SELECT schedule_snapshot_id, source, source_version, observed_at, fetched_at, "
+            "imported_at FROM team_schedule_snapshots WHERE season=? "
+            "ORDER BY observed_at DESC, imported_at DESC LIMIT 1",
+            [context.season],
+        ).fetchone()
+
+    def source_status(
+        row: tuple[Any, ...] | None, provider: str, *, configured: bool = True
+    ) -> dict[str, Any]:
+        if row is None:
+            return {
+                "provider": provider,
+                "state": "missing" if configured else "manual",
+                "configured": configured,
+                "compatible": False,
+                "latest_compatible_snapshot": None,
+            }
+        observed = row[3]
+        return {
+            "provider": row[1],
+            "source_version": row[2],
+            "state": "available",
+            "configured": configured,
+            "compatible": True,
+            "latest_compatible_snapshot": row[0],
+            "observed_at": observed,
+            "fetched_at": row[4],
+            "imported_at": row[5],
+            "age_seconds": max(0.0, (now - observed).total_seconds()),
+        }
+
+    player_status = {
+        "provider": "sleeper",
+        "source_version": str(player[3]) if player else None,
+        "state": "available" if player else "missing",
+        "configured": True,
+        "compatible": bool(player),
+        "latest_compatible_snapshot": player[0] if player else None,
+        "observed_at": player[1] if player else None,
+        "fetched_at": player[2] if player else None,
+        "age_seconds": max(0.0, (now - player[1]).total_seconds()) if player else None,
+    }
+    configured_readiness = readiness(settings, repository_root=repository_root)
+    active = settings.active_context
+    assert active is not None
+    portable_context = active.model_copy(
+        update={
+            "recommendation_model": "portable-market-1.0",
+            "ranking_source": None,
+            "strategy": None,
+        }
+    )
+    portable_settings = settings.model_copy(
+        update={"league_contexts": {**settings.league_contexts, active.league_id: portable_context}}
+    )
+    portable_readiness = readiness(portable_settings, repository_root=repository_root)
+    return {
+        "schema_version": "1.0",
+        "active_league_id": active.league_id,
+        "format": {
+            "season": context.season,
+            "league_size": context.league_size,
+            "scoring_format": context.scoring_format,
+            "draft_type": context.draft_type,
+        },
+        "sources": {
+            "player_directory": player_status,
+            "ffc_adp": source_status(adp, FFC_SOURCE),
+            "portable_market_board": source_status(
+                board, "fantasy-football-calculator-market-board"
+            ),
+            "team_schedule": source_status(schedule, NFLVERSE_SOURCE),
+            "custom_rankings": {
+                "provider": "manual",
+                "state": "manual",
+                "configured": bool(active.ranking_source),
+                "compatible": None,
+            },
+            "custom_projections": {
+                "provider": "manual",
+                "state": "manual",
+                "configured": active.recommendation_model != "portable-market-1.0",
+                "compatible": None,
+            },
+        },
+        "model_readiness": {
+            "portable-market-1.0": {
+                "status": "READY" if portable_readiness["ready"] else "NOT READY",
+                "ready": portable_readiness["ready"],
+                "checks": portable_readiness["checks"],
+            },
+            "configured": {
+                "model": configured_readiness.get("recommendation_model"),
+                "status": "READY" if configured_readiness["ready"] else "NOT READY",
+                "ready": configured_readiness["ready"],
+                "checks": configured_readiness["checks"],
+            },
+        },
     }
 
 
@@ -202,6 +339,7 @@ def _bootstrap_adp(
             source_payload_hash=data.payload_hash,
             transformation_version=data.transformation_version,
         )
+        board, board_created = derive_market_board(repository, snapshot.adp_snapshot_id)
         return {
             "status": "acquired" if created else "unchanged",
             "provider": FFC_SOURCE,
@@ -211,6 +349,13 @@ def _bootstrap_adp(
             "matched": snapshot.matched_row_count,
             "unresolved": snapshot.unresolved_row_count,
             "ambiguous": snapshot.ambiguous_row_count,
+            "market_board": {
+                "status": "derived" if board_created else "unchanged",
+                "source": board.source,
+                "snapshot_id": board.market_board_snapshot_id,
+                "transformation_version": board.transformation_version,
+                "derived_from_adp_snapshot_id": board.derived_from_adp_snapshot_id,
+            },
         }
     except FwrError as exc:
         return _source_failure(FFC_SOURCE, exc)

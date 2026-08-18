@@ -27,12 +27,13 @@ Sleeper -> fwr watch -> DuckDB snapshots -> FWR decision engine -> MCP -> AI cli
 Portable source acquisition is a separate explicit CLI process:
 
 ```text
-Fantasy Football Calculator / nflverse -> fwr data bootstrap -> immutable DuckDB snapshots
+Fantasy Football Calculator / nflverse -> fwr data refresh -> immutable DuckDB snapshots
 ```
 
-It never occurs in recommendation code or MCP. The bootstrap command uses the active synchronized
+It never occurs in recommendation code or MCP. The refresh command uses the active synchronized
 league's exact season, team count, scoring format, and draft type. It currently automates ADP and
-schedule/byes only. Rankings and projections remain external, user-supplied data; FantasyPros is
+schedule/byes and a derived portable market board. Rankings and projections remain optional,
+user-supplied enhanced data; FantasyPros is
 deferred because its official API requires approved credentials and restrictive terms.
 
 Fantasy War Room remains authoritative for draft state, identity, availability,
@@ -165,12 +166,12 @@ the first release.
 Generate exact project-local configuration from the active league context:
 
 ```console
-uv run fwr data bootstrap
+uv run fwr data refresh
 uv run fwr draft-ready
 uv run fwr codex configure
 ```
 
-`data bootstrap` caches sanitized provider payloads under the XDG cache directory and persists
+`data refresh` caches sanitized provider payloads under the XDG cache directory and persists
 normalized immutable snapshots with source URI/version/hash and fetch, observation, and import
 times. Fantasy Football Calculator asks API users to attribute its ADP data. nflverse schedule
 data is CC BY 4.0. Unresolved player rows remain explicit and fuzzy matching is never used.
@@ -182,23 +183,22 @@ project configuration. Valid equivalent unmanaged tables, including quoted TOML 
 safe error instead of an automatic rewrite; remove that table before allowing FWR to manage it.
 Malformed TOML is likewise never rewritten. Restart Codex in the trusted repository afterward.
 
-For manual startup, MCP v1 requires `--draft-id` and an explicit ranking source (or one selected
-in the active context):
+For manual startup, MCP v1 requires `--draft-id`; `--source` identifies either the compatible
+ranking source for a projection-backed model or the derived market-board source for portable mode:
 
 ```console
-fwr-mcp \
+uv run fwr-mcp \
   --draft-id DRAFT_ID \
   [--draft-slot SLOT] \
-  --source YOUR_COMPATIBLE_SOURCE \
-  [--model baseline-1.0] \
-  [--strategy logan-ppr-2flex-1.0] \
+  --source fantasy-football-calculator-market-board \
+  [--model portable-market-1.0] \
   [--database PATH]
 ```
 
 The implemented startup parser requires `--draft-id`; accepts optional
 `--draft-slot`, `--source`, `--model`, and `--database`; and resolves source and model from the
-active league context when omitted. There is no personalized source default; the portable model
-default is `baseline-1.0`. The database path falls
+active league context when omitted. New league contexts default to `portable-market-1.0`; saved
+existing contexts are not rewritten. The database path falls
 back through the application's existing `FWR_DB_PATH`, user configuration, and
 XDG default behavior. MCP-specific environment variables are not implemented
 in v1. Explicit `recommend_pick` arguments may override source and model for
@@ -371,8 +371,10 @@ Arguments:
 `limit` defaults to 20 and is bounded to 1..100. Position is optional; the
 first recommendation system remains offensive-only under every policy.
 
-Returns schema `fwr.mcp.available-players/1.0`, ordered by the configured MCP
-model's deterministic recommendation order. Every row includes:
+Returns schema `fwr.mcp.available-players/1.0`, ordered by the configured MCP model's
+deterministic recommendation order. Portable rows include canonical/Sleeper identity, position,
+team, FFC market rank/ADP, `projection_backed=false`, and limitations; they do not contain fake
+projection, VORP, or scarcity values. Projection-backed rows include:
 
 - canonical/Sleeper IDs, readable name, position, and team;
 - availability state, always `available` in this result;
@@ -403,20 +405,19 @@ Arguments:
 }
 ```
 
-Defaults are shown above; supported models remain `baseline-1.0`,
-`trusted-board-1.0`, and `trusted-board-1.1`. `limit` defaults to 10 and is
+Supported models are `portable-market-1.0`, `baseline-1.0`, `trusted-board-1.0`, and
+`trusted-board-1.1`. `limit` defaults to 10 and is
 bounded to 1..100.
 
-Returns schema `fwr.mcp.recommendation/1.0` containing the existing complete,
-versioned recommendation result after presentation limiting. Candidate data
-includes projection and completeness, VORP, scarcity, roster effect, trusted
-rank/tier values and components when the model supplies them, every component
-weight and contribution, limitations, baselines, and full provenance.
+Returns schema `fwr.mcp.recommendation/1.0` containing a complete versioned result after
+presentation limiting. Portable candidates follow exact compatible FFC market order and return
+`projection_backed=false` plus board provenance and limitations. Projection-backed candidate data
+includes projection completeness, VORP, scarcity, roster effect, trusted rank/tier values and
+components when supplied, weights, limitations, baselines, and provenance.
 
-The implementation calls the existing recommendation input builder and pure
-`recommend()` function. MCP contains no scoring, VORP, scarcity, roster, rank,
-or tier formula. The next-pick component remains zero and availability remains
-`unsupported_uncalibrated`.
+The implementation calls the existing model-specific input builder and pure recommendation
+function. MCP contains no scoring, VORP, scarcity, roster, rank, tier, market-board, or survival
+formula. Survival remains a separate simulated wait-cost tool.
 
 ### `compare_players`
 
@@ -529,9 +530,9 @@ The full instructions are:
    `recommend_pick` first. It is the authoritative single coherent call and
    already contains turn context, roster state, recommendations, and
    provenance. Do not require a preceding `get_draft_state` call.
-2. Use `recommend_pick` with `trusted-board-1.1` and
-   `parlay-play-hybrid` unless the user requests another supported model or
-   source.
+2. Respect the configured recommendation model and source. Treat
+   `portable-market-1.0` as market ordering with `projection_backed=false`; do
+   not substitute a private ranking source or projection-backed model.
 3. Use `get_draft_state` for direct questions about pick, round, clock, recent
    picks, or draft status.
 4. Use `get_my_roster` whenever roster construction, vacancies, FLEX, or the
@@ -602,9 +603,9 @@ args = [
   "--draft-slot",
   "SLOT",
   "--source",
-  "YOUR_COMPATIBLE_SOURCE",
+  "fantasy-football-calculator-market-board",
   "--model",
-  "baseline-1.0",
+  "portable-market-1.0",
   "--database",
   "/absolute/path/to/fantasy-war-room.duckdb",
 ]
@@ -612,19 +613,6 @@ cwd = "/absolute/path/to/fantasy-war-room"
 startup_timeout_sec = 10
 tool_timeout_sec = 30
 required = false
-default_tools_approval_mode = "writes"
-enabled_tools = [
-  "get_draft_state",
-  "get_my_roster",
-  "get_available_players",
-  "recommend_pick",
-  "compare_players",
-  "get_position_outlook",
-  "get_market_context",
-  "get_opponent_demand",
-  "simulate_next_pick_survival",
-  "get_draft_strategy",
-]
 ```
 
 The server uses only the scoring context already persisted on the selected
@@ -643,9 +631,8 @@ codex mcp add fantasy-war-room -- \
 
 That global option is documented as opt-in, not the draft-night default.
 `codex mcp list` verifies registration; `/mcp` verifies the active server in a
-Codex session. The config uses `writes` approval behavior plus an allowlist of
-the nine default tools and optional `get_draft_strategy`. `required = false` prevents initialization
-failure from blocking the project session. These forms follow the official
+Codex session. `required = false` prevents initialization failure from blocking
+the project session. These forms follow the official
 Codex MCP documentation. The stdio entry point is integration-tested outside
 the repository working directory; project-scoped Codex configuration remains a
 documented operator setup rather than an application parser feature.

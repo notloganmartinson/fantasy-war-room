@@ -30,7 +30,11 @@ READ_ONLY = ToolAnnotations(
 )
 SERVER_INSTRUCTIONS = """Fantasy War Room is authoritative for synchronized draft facts. For
 “Who should I take?”, call recommend_pick first; it is the coherent source for turn, roster,
-candidates, and provenance. Never invent availability or next-pick probabilities.
+candidates, and provenance. portable-market-1.0 is an explicit market-order baseline and reports
+projection_backed=false; baseline/trusted-board models are projection-backed. Never describe the
+portable result as projected player quality or invent availability, rankings, projections, or ADP.
+Projection-specific roster, comparison, position-outlook, and enriched market tools may be
+unavailable in portable mode; do not fill their absent fields from memory.
 
 Use get_draft_state for direct pick, round, clock, recent-pick, or status questions. Use
 get_my_roster when roster construction matters, compare_players for direct comparisons, and
@@ -288,7 +292,12 @@ def _position(value: str | None) -> OffensivePosition | None:
 
 
 def _model(value: str) -> RecommendationModelVersion:
-    supported = {"baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"}
+    supported = {
+        "baseline-1.0",
+        "portable-market-1.0",
+        "trusted-board-1.0",
+        "trusted-board-1.1",
+    }
     if value not in supported:
         raise InputError(
             "unsupported_recommendation_model",
@@ -327,7 +336,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--schedule-source", default="local-schedule")
     parser.add_argument(
         "--model",
-        choices=("baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"),
+        choices=(
+            "baseline-1.0",
+            "portable-market-1.0",
+            "trusted-board-1.0",
+            "trusted-board-1.1",
+        ),
     )
     parser.add_argument("--database", type=Path)
     parser.add_argument("--strategy", default=os.getenv("FWR_MCP_STRATEGY"))

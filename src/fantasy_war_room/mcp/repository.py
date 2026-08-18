@@ -9,11 +9,19 @@ from typing import cast
 import duckdb
 
 from fantasy_war_room.database import with_database_lock_retry
-from fantasy_war_room.decision.models import RecommendationInputs, RecommendationProvenance
+from fantasy_war_room.decision.models import (
+    OffensivePosition,
+    PortableMarketPlayerInput,
+    PortableMarketProvenance,
+    PortableMarketRecommendationInputs,
+    RecommendationInputs,
+    RecommendationProvenance,
+)
 from fantasy_war_room.decision.survival_models import NextPickSurvivalInputs, SurvivalModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
 from fantasy_war_room.models import (
     AdpSnapshot,
+    MarketBoardSnapshot,
     ProjectionSnapshot,
     RankingSnapshot,
     Snapshot,
@@ -167,6 +175,50 @@ class McpReadRepository:
                 )
                 connection.commit()
                 return cast(tuple[NextPickSurvivalInputs, dict[str, object]], result)
+            except Exception:
+                if connection is not None:
+                    with suppress(Exception):
+                        connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+
+        if sleep is None:
+            return with_database_lock_retry(operation)
+        return with_database_lock_retry(operation, sleep=sleep)
+
+    def read_portable(
+        self,
+        at: datetime | None,
+        *,
+        draft_id: str,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> tuple[PortableMarketRecommendationInputs, Snapshot]:
+        if not self.path.exists():
+            raise NotFoundError(
+                "Fantasy War Room database does not exist",
+                {"database": str(self.path)},
+                code="database_not_found",
+            )
+
+        def operation() -> tuple[PortableMarketRecommendationInputs, Snapshot]:
+            connection: duckdb.DuckDBPyConnection | None = None
+            try:
+                connection = duckdb.connect(str(self.path), read_only=True)
+                connection.begin()
+                _validate_schema(connection)
+                result = _portable_inputs_from_connection(
+                    connection,
+                    at or datetime.now(UTC),
+                    draft_id=draft_id,
+                    sleeper_user_id=sleeper_user_id,
+                    draft_slot=draft_slot,
+                )
+                connection.commit()
+                return result
             except Exception:
                 if connection is not None:
                     with suppress(Exception):
@@ -432,3 +484,158 @@ def _inputs_from_connection(
         ),
     )
     return inputs, draft_snapshot
+
+
+def _portable_inputs_from_connection(
+    connection: duckdb.DuckDBPyConnection,
+    at: datetime,
+    *,
+    draft_id: str,
+    sleeper_user_id: str | None,
+    draft_slot: int | None,
+) -> tuple[PortableMarketRecommendationInputs, Snapshot]:
+    draft_snapshot = _snapshot_from_row(
+        _select_recommendation_draft(connection, at, draft_id, None)
+    )
+    scoring_context = draft_snapshot.scoring_context
+    if scoring_context is None or draft_snapshot.scoring_context_league_id is None:
+        raise ConfigurationError(
+            "mock_scoring_context_required",
+            "Standalone draft has no explicit league scoring context",
+            {"draft_id": draft_snapshot.draft_id},
+        )
+    scoring = scoring_context.get("scoring_settings")
+    if not isinstance(scoring, dict):
+        raise InputError(
+            "incompatible_scoring_context",
+            "Selected draft scoring context has no scoring settings",
+            {"draft_id": draft_snapshot.draft_id},
+        )
+    try:
+        normalized_scoring = {str(key): float(value) for key, value in scoring.items()}
+    except (TypeError, ValueError) as error:
+        raise InputError(
+            "incompatible_scoring_context",
+            "Selected draft scoring settings contain a nonnumeric value",
+            {"draft_id": draft_snapshot.draft_id},
+        ) from error
+    season = str(draft_snapshot.draft.get("season") or "")
+    team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
+    league_type, keeper_status = _recommendation_league_format(scoring_context)
+    scoring_format = _recommendation_scoring_format(normalized_scoring)
+    market_scoring = {
+        "full_ppr": "ppr",
+        "half_ppr": "half_ppr",
+        "standard": "standard",
+    }.get(scoring_format)
+    if market_scoring is None:
+        raise InputError(
+            "unsupported_adp_scoring_format",
+            "Portable market recommendations require an exact FFC-compatible scoring format",
+            {"scoring_format": scoring_format},
+        )
+    player_row = connection.execute(
+        "SELECT snapshot_id, observed_at, fetched_at FROM player_directory_snapshots "
+        "WHERE provider='sleeper' AND sport='nfl' AND observed_at<=? AND fetched_at<=? "
+        "ORDER BY observed_at DESC, fetched_at DESC, snapshot_id DESC LIMIT 1",
+        [at, at],
+    ).fetchone()
+    if player_row is None:
+        raise NotFoundError(
+            "No eligible player-directory snapshot exists as of the decision time",
+            {"as_of": at.isoformat()},
+            code="missing_player_snapshot",
+        )
+    board_row = connection.execute(
+        "SELECT * FROM market_board_snapshots WHERE observed_at<=? AND imported_at<=? "
+        "AND season=? AND league_size=? AND scoring_format=? AND draft_type=? "
+        "AND source='fantasy-football-calculator-market-board' "
+        "AND transformation_version='ffc-adp-to-market-board-1.0' "
+        "ORDER BY observed_at DESC, imported_at DESC, market_board_snapshot_id DESC LIMIT 1",
+        [at, at, season, team_count, market_scoring, draft_type],
+    ).fetchone()
+    if board_row is None:
+        raise NotFoundError(
+            "No exact compatible portable market board exists as of the decision time",
+            {"season": season, "league_size": team_count, "scoring_format": market_scoring},
+            code="missing_compatible_market_board",
+        )
+    board = MarketBoardSnapshot.from_row(board_row)
+    provider_rows = connection.execute(
+        "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
+        "WHERE provider='sleeper' AND first_observed_at<=? ORDER BY provider_player_id",
+        [player_row[1]],
+    ).fetchall()
+    sleeper_to_canonical = {
+        str(provider_id): str(canonical_id) for canonical_id, provider_id in provider_rows
+    }
+    resolved_slot = _resolve_recommendation_draft_slot(draft_snapshot, draft_slot, sleeper_user_id)
+    completed, unresolved = _recommendation_picks(
+        draft_snapshot, resolved_slot, sleeper_to_canonical
+    )
+    rows = connection.execute(
+        "SELECT e.canonical_player_id, min(ids.provider_player_id), "
+        "trim(any_value(o.first_name) || ' ' || any_value(o.last_name)), "
+        "upper(any_value(o.position)), any_value(o.team), e.overall_market_rank, "
+        "e.overall_adp, e.adp_sd FROM market_board_entries e "
+        "JOIN player_observations o ON o.snapshot_id=? "
+        "AND o.canonical_player_id=e.canonical_player_id "
+        "LEFT JOIN player_provider_ids ids ON ids.canonical_player_id=e.canonical_player_id "
+        "AND ids.provider='sleeper' AND ids.first_observed_at<=? "
+        "WHERE e.market_board_snapshot_id=? "
+        "AND e.match_status='matched' AND e.overall_market_rank IS NOT NULL "
+        "GROUP BY e.canonical_player_id, e.overall_market_rank, e.overall_adp, e.adp_sd "
+        "ORDER BY e.overall_market_rank, e.canonical_player_id",
+        [player_row[0], player_row[1], board.market_board_snapshot_id],
+    ).fetchall()
+    players = tuple(
+        PortableMarketPlayerInput(
+            canonical_player_id=str(row[0]),
+            sleeper_player_id=str(row[1]) if row[1] is not None else None,
+            player_name=str(row[2]),
+            position=cast(OffensivePosition, str(row[3])),
+            team=str(row[4]) if row[4] is not None else None,
+            overall_market_rank=int(row[5]),
+            overall_adp=float(row[6]),
+            adp_sd=float(row[7]) if row[7] is not None else None,
+        )
+        for row in rows
+        if str(row[3]) in {"QB", "RB", "WR", "TE"}
+    )
+    return PortableMarketRecommendationInputs(
+        decision_at=at,
+        team_count=team_count,
+        draft_type=draft_type,
+        draft_rounds=rounds,
+        draft_slot=resolved_slot,
+        roster=_recommendation_roster_configuration(scoring_context),
+        completed_picks=completed,
+        market_players=players,
+        unresolved_roster_player_ids=unresolved,
+        league_type=league_type,
+        keeper_status=keeper_status,
+        scoring_format=scoring_format,
+        provenance=PortableMarketProvenance(
+            draft_snapshot_id=draft_snapshot.snapshot_id,
+            draft_observed_at=draft_snapshot.observed_at,
+            player_snapshot_id=str(player_row[0]),
+            player_observed_at=player_row[1],
+            player_fetched_at=player_row[2],
+            market_board_snapshot_id=board.market_board_snapshot_id,
+            market_board_source=board.source,
+            market_board_source_version=board.source_version,
+            market_board_transformation_version=board.transformation_version,
+            market_board_observed_at=board.observed_at,
+            market_board_fetched_at=board.fetched_at,
+            market_board_imported_at=board.imported_at,
+            market_board_payload_hash=board.payload_hash,
+            source_uri=board.source_uri,
+            source_payload_hash=board.source_payload_hash,
+            derived_from_adp_snapshot_id=board.derived_from_adp_snapshot_id,
+            identity_resolver_version=board.identity_resolver_version,
+            market_board_matched_row_count=board.matched_row_count,
+            market_board_unresolved_row_count=board.unresolved_row_count,
+            market_board_ambiguous_row_count=board.ambiguous_row_count,
+            scoring_context_league_id=draft_snapshot.scoring_context_league_id,
+        ),
+    ), draft_snapshot

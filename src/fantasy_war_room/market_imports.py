@@ -183,7 +183,21 @@ def import_adp_frame(
         source_payload_hash=source_payload_hash,
         transformation_version=transformation_version,
     )
-    return snapshot, repository.insert_adp_snapshot(snapshot, entries, issues)
+    created = repository.insert_adp_snapshot(snapshot, entries, issues)
+    if not created:
+        persisted = next(
+            row
+            for row in repository.adp_snapshots()
+            if row.source == snapshot.source
+            and row.source_version == snapshot.source_version
+            and row.season == snapshot.season
+            and row.league_size == snapshot.league_size
+            and row.scoring_format == snapshot.scoring_format
+            and row.draft_type == snapshot.draft_type
+            and row.payload_hash == snapshot.payload_hash
+        )
+        return persisted, False
+    return snapshot, True
 
 
 def import_team_schedule(

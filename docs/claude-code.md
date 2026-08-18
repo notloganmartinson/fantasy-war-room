@@ -11,15 +11,16 @@ Complete the normal onboarding and confirm that the active draft is ready:
 ```console
 uv sync
 uv run fwr setup --username YOUR_SLEEPER_USERNAME
-uv run fwr data bootstrap
+uv run fwr data refresh
+uv run fwr data status --json
 uv run fwr draft-ready --json
 uv run fwr context --json
 ```
 
-`draft-ready` must report `ready: true`. A clean clone still requires compatible user-supplied
-rankings and projections. From the two JSON responses, note the resolved draft ID, draft slot,
-ranking source, recommendation model, database path, and optional strategy. Do not commit those
-values.
+`draft-ready` must report `ready: true`. New league contexts use the zero-key
+`portable-market-1.0` path and do not require user-supplied rankings or projections. From the two
+JSON responses, note the resolved draft ID, draft slot, source, recommendation model, database
+path, and optional strategy. Do not commit those values.
 
 ## Register the existing stdio server
 
@@ -30,7 +31,7 @@ claude mcp add --scope local --transport stdio fantasy-war-room -- \
   uv run --project /ABSOLUTE/PATH/TO/fantasy-war-room fwr-mcp \
   --draft-id DRAFT_ID \
   --draft-slot DRAFT_SLOT \
-  --source RANKING_SOURCE \
+  --source SOURCE \
   --model RECOMMENDATION_MODEL \
   --database /ABSOLUTE/PATH/TO/fantasy-war-room.duckdb
 ```

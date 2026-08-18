@@ -13,7 +13,12 @@ from fantasy_war_room.errors import ConfigurationError
 
 APP_NAME = "fantasy-war-room"
 CONFIG_SCHEMA_VERSION = "2.0"
-RecommendationModelSelection = Literal["baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"]
+RecommendationModelSelection = Literal[
+    "portable-market-1.0",
+    "baseline-1.0",
+    "trusted-board-1.0",
+    "trusted-board-1.1",
+]
 
 
 def app_dirs() -> PlatformDirs:
@@ -185,17 +190,18 @@ def with_league_context(
 ) -> Settings:
     contexts = dict(settings.league_contexts)
     previous = contexts.get(league_id) if preserve_preferences else None
+    selected_model = (
+        recommendation_model
+        if recommendation_model is not None
+        else (previous.recommendation_model if previous is not None else "portable-market-1.0")
+    )
     contexts[league_id] = LeagueContext(
         season=season,
         league_id=league_id,
         ranking_source=ranking_source
         if ranking_source is not None
         else (previous.ranking_source if previous else None),
-        recommendation_model=(
-            recommendation_model
-            if recommendation_model is not None
-            else (previous.recommendation_model if previous else None)
-        ),
+        recommendation_model=selected_model,
         strategy=strategy if strategy is not None else (previous.strategy if previous else None),
     )
     return settings.model_copy(

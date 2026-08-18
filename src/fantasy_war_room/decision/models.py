@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 OffensivePosition = Literal["QB", "RB", "WR", "TE"]
 ProjectionValueKind = Literal["exact", "known_component"]
-RecommendationModelVersion = Literal["baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"]
+RecommendationModelVersion = Literal[
+    "portable-market-1.0",
+    "baseline-1.0",
+    "trusted-board-1.0",
+    "trusted-board-1.1",
+]
 
 
 class DecisionModel(BaseModel):
@@ -94,6 +99,61 @@ class RecommendationInputs(DecisionModel):
     projected_players: tuple[RecommendationPlayerInput, ...]
     expert_rankings: tuple[ExpertRankingInput, ...]
     provenance: RecommendationProvenance
+    unresolved_roster_player_ids: tuple[str, ...] = ()
+    sport: Literal["nfl"] = "nfl"
+    league_type: Literal["redraft", "keeper", "dynasty", "unknown"] = "unknown"
+    keeper_status: Literal["non_keeper", "keeper", "unknown"] = "unknown"
+    scoring_format: Literal["full_ppr", "half_ppr", "standard", "custom"] = "full_ppr"
+
+
+class PortableMarketPlayerInput(DecisionModel):
+    schema_version: str = "1.0"
+    canonical_player_id: str
+    sleeper_player_id: str | None = None
+    player_name: str
+    position: OffensivePosition
+    team: str | None = None
+    overall_market_rank: int = Field(gt=0)
+    overall_adp: float = Field(gt=0)
+    adp_sd: float | None = Field(default=None, ge=0)
+
+
+class PortableMarketProvenance(DecisionModel):
+    schema_version: str = "1.0"
+    draft_snapshot_id: str
+    draft_observed_at: datetime
+    player_snapshot_id: str
+    player_observed_at: datetime
+    player_fetched_at: datetime
+    market_board_snapshot_id: str
+    market_board_source: str
+    market_board_source_version: str
+    market_board_transformation_version: str
+    market_board_observed_at: datetime
+    market_board_fetched_at: datetime | None
+    market_board_imported_at: datetime
+    market_board_payload_hash: str
+    source_uri: str | None
+    source_payload_hash: str | None
+    derived_from_adp_snapshot_id: str
+    identity_resolver_version: str
+    market_board_matched_row_count: int
+    market_board_unresolved_row_count: int
+    market_board_ambiguous_row_count: int
+    scoring_context_league_id: str
+
+
+class PortableMarketRecommendationInputs(DecisionModel):
+    schema_version: str = "1.0"
+    decision_at: datetime
+    team_count: int = Field(gt=0)
+    draft_type: str
+    draft_rounds: int = Field(gt=0)
+    draft_slot: int = Field(gt=0)
+    roster: RosterConfiguration
+    completed_picks: tuple[CompletedDraftPick, ...]
+    market_players: tuple[PortableMarketPlayerInput, ...]
+    provenance: PortableMarketProvenance
     unresolved_roster_player_ids: tuple[str, ...] = ()
     sport: Literal["nfl"] = "nfl"
     league_type: Literal["redraft", "keeper", "dynasty", "unknown"] = "unknown"
@@ -290,3 +350,39 @@ class TrustedBoardRecommendationResult(RecommendationResult):
     schema_version: str = "1.1"
     candidates: tuple[TrustedBoardCandidateExplanation, ...]
     model_specification: TrustedBoardModelSpecification
+
+
+class PortableRosterContext(DecisionModel):
+    schema_version: str = "1.0"
+    drafted_position_counts: dict[str, int]
+    starting_roster_requirements: RosterConfiguration
+    unresolved_user_pick_count: int
+
+
+class PortableMarketCandidate(DecisionModel):
+    schema_version: str = "1.0"
+    recommendation_rank: int
+    canonical_player_id: str
+    sleeper_player_id: str | None
+    player_name: str
+    position: OffensivePosition
+    team: str | None
+    overall_market_rank: int
+    overall_adp: float
+    adp_sd: float | None
+    recommendation_basis: Literal["compatible_ffc_market_order"] = "compatible_ffc_market_order"
+    projection_backed: Literal[False] = False
+
+
+class PortableMarketRecommendationResult(DecisionModel):
+    schema_version: str = "1.0"
+    decision_at: datetime
+    projection_backed: Literal[False] = False
+    recommendation_model_version: Literal["portable-market-1.0"] = "portable-market-1.0"
+    recommendation_basis: Literal["compatible_ffc_market_order"] = "compatible_ffc_market_order"
+    turn_context: DraftTurnContext
+    roster_context: PortableRosterContext
+    candidates: tuple[PortableMarketCandidate, ...]
+    provenance: PortableMarketProvenance
+    excluded_candidate_counts: dict[str, int]
+    limitations: tuple[str, ...]

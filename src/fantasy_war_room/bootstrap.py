@@ -28,6 +28,7 @@ from fantasy_war_room.strategy.load import load_strategy_profile
 from fantasy_war_room.strategy.models import StrategyProfile
 
 RECOMMENDATION_DEFAULT = "baseline-1.0"
+PORTABLE_MARKET_SOURCE = "fantasy-football-calculator-market-board"
 PROJECTION_DEFAULT = "cbs"
 MANAGED_START = "# BEGIN FWR MANAGED MCP"
 MANAGED_END = "# END FWR MANAGED MCP"
@@ -74,8 +75,11 @@ def resolve_effective_draft_configuration(settings: Settings) -> EffectiveDraftC
             )
         model = profile.required_raw_model
         source = profile.required_ranking_source
+    selected_model = cast(RecommendationModelVersion, model or RECOMMENDATION_DEFAULT)
+    if selected_model == "portable-market-1.0" and source is None:
+        source = PORTABLE_MARKET_SOURCE
     return EffectiveDraftConfiguration(
-        recommendation_model=cast(RecommendationModelVersion, model or RECOMMENDATION_DEFAULT),
+        recommendation_model=selected_model,
         ranking_source=source,
         strategy=context.strategy,
         strategy_profile=profile,
@@ -288,6 +292,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchall()
         sources = sorted({str(item[0]) for item in ranking_rows})
         assert effective is not None
+        portable_model = effective.recommendation_model == "portable-market-1.0"
         selected_source = effective.ranking_source
         source_policy = (
             "strategy_requirement"
@@ -299,11 +304,15 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         ranking = next((item for item in ranking_rows if item[0] == selected_source), None)
         check(
             "compatible_ranking",
-            True,
-            "pass" if ranking else "fail",
-            "Compatible ranking snapshot selected"
-            if ranking
-            else "Import compatible rankings and select ranking_source",
+            not portable_model,
+            "skipped" if portable_model else ("pass" if ranking else "fail"),
+            "Projection-backed ranking is not required by portable-market-1.0"
+            if portable_model
+            else (
+                "Compatible ranking snapshot selected"
+                if ranking
+                else "Import compatible rankings and select ranking_source"
+            ),
             source=selected_source,
             resolution_policy=source_policy,
             compatible_sources=sources,
@@ -322,11 +331,15 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchone()
         check(
             "compatible_projection",
-            True,
-            "pass" if projection else "fail",
-            "Compatible projection snapshot is available"
-            if projection
-            else "Import projections for this league's exact scoring settings",
+            not portable_model,
+            "skipped" if portable_model else ("pass" if projection else "fail"),
+            "Projection snapshot is intentionally not required by portable-market-1.0"
+            if portable_model
+            else (
+                "Compatible projection snapshot is available"
+                if projection
+                else "Import projections for this league's exact scoring settings"
+            ),
             source=PROJECTION_DEFAULT,
             snapshot_id=str(projection[0]) if projection else None,
             acquisition="user_supplied",
@@ -344,7 +357,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchone()
         check(
             "compatible_adp",
-            False,
+            portable_model,
             "pass" if adp else "missing",
             "Compatible ADP is available"
             if adp
@@ -353,6 +366,34 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             source=str(adp[1]) if adp else None,
             acquisition="automatic",
             command="fwr data bootstrap",
+        )
+        market_board = None
+        if scoring_key and team_count is not None:
+            market_board = connection.execute(
+                "SELECT market_board_snapshot_id, source, transformation_version "
+                "FROM market_board_snapshots WHERE season=? AND league_size=? "
+                "AND scoring_format=? AND draft_type='snake' "
+                "AND source='fantasy-football-calculator-market-board' "
+                "AND transformation_version='ffc-adp-to-market-board-1.0' "
+                "ORDER BY observed_at DESC, imported_at DESC LIMIT 1",
+                [context.season, team_count, scoring_key],
+            ).fetchone()
+        check(
+            "compatible_market_board",
+            portable_model,
+            "pass" if market_board else ("fail" if portable_model else "missing"),
+            "Exact compatible FFC portable market board is available"
+            if market_board
+            else (
+                "Run fwr data refresh to derive an exact compatible FFC market board"
+                if portable_model
+                else "Portable market board is not required by the configured model"
+            ),
+            snapshot_id=str(market_board[0]) if market_board else None,
+            source=str(market_board[1]) if market_board else None,
+            transformation_version=str(market_board[2]) if market_board else None,
+            acquisition="automatic",
+            command="fwr data refresh",
         )
         schedule = connection.execute(
             "SELECT schedule_snapshot_id, source FROM team_schedule_snapshots "
@@ -460,6 +501,7 @@ def _readiness_result(
         "compatible_ranking": (True, "Import compatible ranking data"),
         "compatible_projection": (True, "Import compatible projection data"),
         "compatible_adp": (False, "Optional compatible ADP is unavailable"),
+        "compatible_market_board": (False, "Portable market board is unavailable"),
         "team_schedule": (False, "Optional team schedule/bye data is unavailable"),
         "recommendation_model": (True, "Resolve a recommendation model"),
         "strategy": (

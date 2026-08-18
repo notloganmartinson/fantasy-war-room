@@ -14,8 +14,8 @@ runs locally; synchronization remains an explicit CLI process.
 ## What it does
 
 - Synchronizes live Sleeper league, roster, and draft state.
-- Ranks available players with deterministic VORP, scarcity, roster-effect, and provenance-aware
-  recommendation logic.
+- Provides a free compatible-market recommendation baseline, with projection-backed VORP,
+  scarcity, and roster-effect models available when richer inputs are configured.
 - Adds compatible ADP market context and seeded next-pick simulated availability rates to show
   the cost of waiting.
 - Replays decisions at explicit historical timestamps without leaking future observations.
@@ -49,9 +49,8 @@ The recording script and reproducible setup are in the
 
 ## Quick start
 
-See [Clean-clone onboarding](#clean-clone-onboarding) below. A clean clone can acquire compatible
-ADP and schedule/bye data automatically; rankings and projections remain explicit external or
-user-supplied inputs.
+See [Clean-clone onboarding](#clean-clone-onboarding) below. A clean clone can acquire everything
+needed for the free portable market mode; rankings and projections are optional enhanced inputs.
 
 ## Why not just ask an LLM?
 
@@ -70,7 +69,8 @@ git clone https://github.com/notloganmartinson/fantasy-war-room.git
 cd fantasy-war-room
 uv sync
 uv run fwr setup --username YOUR_SLEEPER_USERNAME
-uv run fwr data bootstrap
+uv run fwr data refresh
+uv run fwr data status
 uv run fwr draft-ready
 uv run fwr codex configure
 ```
@@ -80,12 +80,24 @@ state, and refreshes the canonical player directory. With multiple leagues it pr
 automation must pass `--league-id`. An unpublished draft order is reported as pending and setup
 is safe to rerun.
 
-Sleeper connectivity and intelligence readiness are separate. `data bootstrap` derives the
+Sleeper connectivity and intelligence readiness are separate. `data refresh` derives the
 active league's season, team count, scoring format, and draft type from synchronized Sleeper
 observations. It automatically acquires exact-format ADP from Fantasy Football Calculator and
-derives NFL bye weeks from the nflverse schedule dataset. A clean clone still has no rankings or
-projections: `draft-ready` reports those required inputs and does not claim `READY` until both
-are imported compatibly.
+derives both an immutable portable market board and NFL bye weeks from the nflverse schedule
+dataset. New league contexts select `portable-market-1.0`, so `draft-ready` can report `READY`
+without ranking or projection files. The portable result follows compatible FFC market order; it
+does not fabricate projected points or claim to be an expert-consensus board.
+
+### Intelligence modes
+
+- **Free portable mode:** Sleeper state and player identity, exact-format FFC ADP and its derived
+  market board, nflverse schedule/byes, market-based recommendations, and survival simulation.
+  No paid data is required.
+- **Enhanced mode:** compatible external or user-supplied rankings and league-scored projections
+  enable the projection-backed `baseline-1.0`, `trusted-board-1.0`, and `trusted-board-1.1`
+  models. An official FantasyPros adapter is not currently implemented.
+- **Personal mode:** custom ranking/projection imports and opt-in strategy profiles remain
+  supported and isolated per league.
 
 Fantasy Football Calculator's documented ADP API is free for personal and commercial use and
 requests attribution; its data is based on human mock drafts and updates daily. nflverse
@@ -94,12 +106,10 @@ the XDG cache directory, then stores normalized immutable observations in DuckDB
 URI/version, fetch/observation/import times, source and normalized payload hashes, identity
 resolver version, and deterministic transformation version. Use `--force` to bypass the cache.
 
-FantasyPros rankings and projections are not acquired automatically. Its official API requires an
-approved private key and imposes usage and redistribution restrictions, so it is not a portable
-default. FWR reports only whether the environment variable is present; it never sends, persists,
-logs, or prints the credential value in this milestone. Existing local
-ranking and CBS projection imports remain available; no private exports or user database are
-bundled or required.
+FantasyPros rankings and projections are not acquired automatically. Its official API and
+licensing require separate authorization, so it is not a portable default. Existing local ranking
+and CBS projection imports remain available; no private exports or user database are bundled or
+required.
 
 For an unattended setup:
 
@@ -122,6 +132,8 @@ working directory.
 
 ```console
 uv run fwr setup --username alice
+uv run fwr data refresh
+uv run fwr data status --json
 uv run fwr data bootstrap
 uv run fwr data bootstrap --force --json
 uv run fwr leagues list
@@ -156,6 +168,10 @@ draft order, and draft state come from Sleeper observations. Switching leagues d
 preferences between them. Personalized strategies are opt-in; `logan-ppr-2flex-1.0` remains
 available but is never selected for a new league.
 
+`parlay-play-hybrid` is a private/manual ranking source name used by an existing personal
+context. Its paid-creator-derived data is not bundled, exposed, redistributed, or acquired by
+FWR. Availability of the public strategy profile does not grant access to that ranking dataset.
+
 The configured Sleeper user ID is the account boundary. Running setup or configure for a
 different resolved user clears the previous user's active league and saved league contexts while
 preserving machine settings such as the database path and polling interval.
@@ -188,13 +204,15 @@ uv run fwr rankings import rankings.csv \
 Rows resolve by explicit provider ID or exact normalized identity. Ambiguous and unresolved rows
 are preserved for inspection with `fwr rankings unresolved`; fuzzy matches are never accepted.
 
-All current recommendation models require an exact-scoring projection snapshot and a compatible
-ranking snapshot. `baseline-1.0` uses the portable model selection fallback but still requires
-both inputs because the current deterministic input builder calculates projection value and an
-expert-rank component. `trusted-board-1.0` and `trusted-board-1.1` likewise require both, and a
-selected strategy may additionally require an exact ranking source/model combination. ADP and
-schedule are optional market context today; `data bootstrap` acquiring them does not fabricate
-rankings or projections merely to turn readiness green.
+`portable-market-1.0` requires an exact compatible FFC ADP snapshot and its deterministically
+derived market board, but no projection snapshot. It orders currently available players by that
+market board and exposes roster/position context separately. It intentionally provides no
+projected points, replacement projection, VORP, projection scarcity, or starter projection delta.
+Survival remains a separate seeded wait-cost lane and never changes this deterministic ordering.
+
+`baseline-1.0`, `trusted-board-1.0`, and `trusted-board-1.1` retain their compatible ranking and
+exact-scoring projection requirements and existing semantics. A selected strategy may additionally
+require an exact source/model combination. There is no silent fallback between these modes.
 
 All finite commands accept `--json` and return a stable envelope with `status`, `command`, `data`,
 and `error`. In JSON mode stdout contains JSON only. `watch` remains the interactive continuous
@@ -238,9 +256,11 @@ instructions.
 
 ## Limitations
 
-- Clean clones can automatically acquire compatible Fantasy Football Calculator ADP and nflverse
-  schedule/bye data, but compatible rankings and projections currently require external or
-  user-supplied files.
+- Clean clones can automatically acquire compatible Fantasy Football Calculator ADP, a derived
+  market board, and nflverse schedule/bye data. Projection-backed modes still require compatible
+  external or user-supplied rankings and projections.
+- `portable-market-1.0` is a market-based baseline, not a projection-backed valuation model.
+  Projection-derived VORP, scarcity, and lineup deltas are intentionally unavailable in this mode.
 - `adp-only-1.0` remains the default survival model because current historical evidence is
   insufficient to justify a more complex default.
 - Simulated availability rates are outputs of a named model, not calibrated or ground-truth
