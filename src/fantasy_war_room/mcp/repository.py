@@ -10,6 +10,7 @@ import duckdb
 
 from fantasy_war_room.database import with_database_lock_retry
 from fantasy_war_room.decision.models import RecommendationInputs, RecommendationProvenance
+from fantasy_war_room.decision.survival_models import NextPickSurvivalInputs, SurvivalModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
 from fantasy_war_room.models import (
     AdpSnapshot,
@@ -31,6 +32,7 @@ from fantasy_war_room.repository import (
     _resolve_recommendation_draft_slot,
     _select_recommendation_draft,
     _snapshot_from_row,
+    _survival_inputs_from_connection,
 )
 
 
@@ -110,6 +112,61 @@ class McpReadRepository:
                 )
                 connection.commit()
                 return inputs, snapshot, adp, schedule
+            except Exception:
+                if connection is not None:
+                    with suppress(Exception):
+                        connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+
+        if sleep is None:
+            return with_database_lock_retry(operation)
+        return with_database_lock_retry(operation, sleep=sleep)
+
+    def read_survival(
+        self,
+        at: datetime | None,
+        *,
+        draft_id: str,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+        candidate_player_ids: tuple[str, ...],
+        simulation_count: int,
+        seed: int,
+        model_version: SurvivalModelVersion,
+        adp_source: str | None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> tuple[NextPickSurvivalInputs, dict[str, object]]:
+        if not self.path.exists():
+            raise NotFoundError(
+                "Fantasy War Room database does not exist",
+                {"database": str(self.path)},
+                code="database_not_found",
+            )
+
+        def operation() -> tuple[NextPickSurvivalInputs, dict[str, object]]:
+            connection: duckdb.DuckDBPyConnection | None = None
+            try:
+                connection = duckdb.connect(str(self.path), read_only=True)
+                connection.begin()
+                _validate_schema(connection)
+                result = _survival_inputs_from_connection(
+                    connection,
+                    at or datetime.now(UTC),
+                    draft_id=draft_id,
+                    league_id=None,
+                    sleeper_user_id=sleeper_user_id,
+                    draft_slot=draft_slot,
+                    candidate_player_ids=candidate_player_ids,
+                    simulation_count=simulation_count,
+                    seed=seed,
+                    model_version=model_version,
+                    adp_source=adp_source,
+                )
+                connection.commit()
+                return cast(tuple[NextPickSurvivalInputs, dict[str, object]], result)
             except Exception:
                 if connection is not None:
                     with suppress(Exception):

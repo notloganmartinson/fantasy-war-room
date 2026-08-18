@@ -366,6 +366,7 @@ def test_mcp_tools_are_read_only_structured_and_domain_errors_set_is_error(
                 "get_position_outlook",
                 "get_market_context",
                 "get_opponent_demand",
+                "simulate_next_pick_survival",
             }
             assert all(
                 tool.annotations and tool.annotations.read_only_hint for tool in listing.tools

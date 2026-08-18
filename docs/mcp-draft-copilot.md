@@ -10,7 +10,8 @@ The implemented baseline exposes six tools: `get_draft_state`,
 strategy-aware startup, dynamic profile instructions, strategy-adjusted
 `recommend_pick` output, and `get_draft_strategy`. M3.5B Part 1 adds read-only
 `get_market_context` and `get_opponent_demand` with coherent ADP and schedule
-provenance.
+provenance. M4C adds the independent read-only `simulate_next_pick_survival`
+wait-cost tool.
 
 ## Goal
 
@@ -288,6 +289,27 @@ calculated, preserving replacement levels, normalizations, scores, and
 baselines.
 
 ## Tools
+
+### `simulate_next_pick_survival`
+
+Arguments:
+
+```json
+{
+  "canonical_player_ids": ["canonical-player-id"],
+  "simulation_count": 5000,
+  "seed": 42,
+  "model": "adp-only-1.0",
+  "as_of": null
+}
+```
+
+The tool returns schema `fwr.mcp.next-pick-survival/1.0` with the canonical simulation result,
+modeled-pool coverage, warnings, and immutable draft, player, and ADP snapshot provenance.
+`adp-only-1.0` is the default; the dispersion and roster-adjusted variants must be requested
+explicitly. Results are named-model simulated availability rates, not ground-truth
+probabilities. They describe wait cost only and remain independent from the deterministic
+quality ordering produced by `recommend_pick`.
 
 ### `get_draft_state`
 

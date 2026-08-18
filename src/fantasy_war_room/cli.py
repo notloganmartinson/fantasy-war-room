@@ -32,6 +32,7 @@ from fantasy_war_room.config import (
 )
 from fantasy_war_room.data_bootstrap import bootstrap_data
 from fantasy_war_room.decision.models import RecommendationModelVersion
+from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import (
     ConfigurationError,
     ExitCode,
@@ -62,6 +63,8 @@ from fantasy_war_room.rendering import (
     render_ranking_issues,
     render_rankings,
     render_recommendation,
+    render_survival,
+    render_survival_evaluation,
     stdout,
 )
 from fantasy_war_room.repository import IntelligenceRepository, SnapshotRepository
@@ -77,6 +80,8 @@ from fantasy_war_room.services import sync as sync_draft
 from fantasy_war_room.services import watch as watch_draft
 from fantasy_war_room.sleeper import SleeperClient
 from fantasy_war_room.strategy.load import load_strategy_profile, strategy_directory
+from fantasy_war_room.survival import build_survival_response
+from fantasy_war_room.survival_evaluation import evaluate_historical_survival
 
 app = typer.Typer(
     help="Local-first, time-aware fantasy football decision data.", no_args_is_help=True
@@ -1172,6 +1177,76 @@ def board(
         return {"as_of": at, "players": results}
 
     _run("board", json_output, operation, lambda result: render_board(result["players"]))
+
+
+@app.command("survival")
+def survival_command(
+    player_ids: list[str] = typer.Option(..., "--player-id"),
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
+    simulations: int = typer.Option(5_000, "--simulations", min=1, max=100_000),
+    seed: int = typer.Option(0, "--seed", min=0, max=2**64 - 1),
+    model: SurvivalModelVersion = typer.Option("adp-only-1.0", "--survival-model"),
+    adp_source: str | None = typer.Option(None, "--adp-source"),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Simulate whether passed candidates remain available at the target user pick."""
+
+    def operation() -> Any:
+        if not 1 <= len(player_ids) <= 20:
+            raise InputError(
+                "invalid_player_count", "survival requires between 1 and 20 --player-id values"
+            )
+        settings = load_settings(db_path=db_path)
+        at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
+        return build_survival_response(
+            IntelligenceRepository(settings.db_path),
+            at,
+            draft_id=draft_id,
+            league_id=None if draft_id else settings.sleeper_league_id,
+            sleeper_user_id=settings.sleeper_user_id,
+            draft_slot=draft_slot,
+            candidate_player_ids=tuple(player_ids),
+            simulation_count=simulations,
+            seed=seed,
+            model_version=model,
+            adp_source=adp_source,
+        )
+
+    _run("survival", json_output, operation, render_survival)
+
+
+@app.command("survival-evaluate")
+def survival_evaluate_command(
+    draft_id: str = typer.Option(..., "--draft-id"),
+    draft_slot: int = typer.Option(..., "--draft-slot", min=1),
+    simulations: int = typer.Option(5_000, "--simulations", min=1, max=100_000),
+    seed: int = typer.Option(0, "--seed", min=0, max=2**64 - 1),
+    adp_source: str | None = typer.Option(None, "--adp-source"),
+    ranking_source: str | None = typer.Option(None, "--source"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare existing survival models against completed local draft history."""
+
+    def operation() -> Any:
+        settings = load_settings(db_path=db_path)
+        effective = resolve_effective_draft_configuration(settings)
+        selected_model = effective.recommendation_model or "baseline-1.0"
+        return evaluate_historical_survival(
+            IntelligenceRepository(settings.db_path),
+            draft_id=draft_id,
+            draft_slot=draft_slot,
+            seed=seed,
+            simulation_count=simulations,
+            adp_source=adp_source,
+            ranking_source=ranking_source or effective.ranking_source,
+            recommendation_model=selected_model,
+        )
+
+    _run("survival-evaluate", json_output, operation, render_survival_evaluation)
 
 
 @app.command("recommend")

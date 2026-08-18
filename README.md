@@ -87,6 +87,10 @@ uv run fwr board --source my-rankings --as-of 2026-08-20T19:00:00Z
 uv run fwr recommend --draft-id 987654 --model trusted-board-1.1
 uv run fwr recommend --draft-id 987654 --draft-slot 7 \
   --strategy logan-ppr-2flex-1.0
+uv run fwr survival --draft-id 987654 --player-id CANONICAL_ID \
+  --simulations 5000 --seed 42 --survival-model adp-only-1.0
+uv run fwr survival-evaluate --draft-id COMPLETED_DRAFT_ID --draft-slot 7 \
+  --simulations 5000 --seed 42 --json
 uv run fwr strategies show logan-ppr-2flex-1.0
 ```
 
@@ -158,6 +162,11 @@ active context's exact draft, slot, source, model, optional strategy, database, 
 directory. It preserves unrelated Codex configuration. An equivalent unmanaged FWR table must
 be removed manually before the command will take ownership. Restart Codex in the trusted
 repository afterward.
+
+The read-only `simulate_next_pick_survival` MCP tool reports a candidate's simulated
+availability rate before the user's target pick under a named model. It is a wait-cost signal,
+not a ground-truth probability or a replacement for the deterministic player-quality ordering
+from `recommend_pick`.
 
 Pass `--strategy logan-ppr-2flex-1.0` to enable the M3.5A deterministic strategy layer.
 The initial profile is compatible with draft slot 7 and preserves the complete raw

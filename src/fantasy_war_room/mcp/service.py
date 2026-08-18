@@ -11,6 +11,7 @@ from fantasy_war_room.decision.models import (
     RecommendationResult,
 )
 from fantasy_war_room.decision.recommend import recommend
+from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import InputError, NotFoundError
 from fantasy_war_room.identity import alias_targets, normalize_name, strict_name
 from fantasy_war_room.market import build_market_context, build_opponent_demand
@@ -20,6 +21,7 @@ from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_c
 from fantasy_war_room.strategy.load import profile_hash
 from fantasy_war_room.strategy.models import StrategyProfile
 from fantasy_war_room.strategy.presentation import limit_strategy_result
+from fantasy_war_room.survival import survival_response
 
 POSITIONS: tuple[OffensivePosition, ...] = ("QB", "RB", "WR", "TE")
 
@@ -87,6 +89,30 @@ class DraftCopilotService:
     def get_opponent_demand(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         result, _, _, market, demand = self._market_context(model=None, source=None, as_of=as_of)
         return demand.model_dump(mode="json"), _market_provenance(result, market)
+
+    def simulate_next_pick_survival(
+        self,
+        *,
+        canonical_player_ids: list[str],
+        simulation_count: int,
+        seed: int,
+        model: SurvivalModelVersion,
+        as_of: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        at = _decision_time(as_of)
+        inputs, provenance = self.repository.read_survival(
+            at,
+            draft_id=self.draft_id,
+            sleeper_user_id=self.sleeper_user_id,
+            draft_slot=self.draft_slot,
+            candidate_player_ids=tuple(canonical_player_ids),
+            simulation_count=simulation_count,
+            seed=seed,
+            model_version=model,
+            adp_source=self.default_adp_source,
+        )
+        response = survival_response(inputs, cast(dict[str, Any], provenance))
+        return response.model_dump(mode="json"), response.provenance
 
     def get_draft_strategy(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         if self.strategy_profile is None:

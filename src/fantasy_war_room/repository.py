@@ -12,12 +12,30 @@ import polars as pl
 
 from fantasy_war_room.decision.models import (
     CompletedDraftPick,
+    DraftTurnContext,
     ExpertRankingInput,
     OffensivePosition,
     RecommendationInputs,
     RecommendationPlayerInput,
     RecommendationProvenance,
     RosterConfiguration,
+)
+from fantasy_war_room.decision.survival import (
+    derive_pass_now_interval,
+    next_scheduled_pick_for_slot,
+    owner_slot_for_pick,
+    survival_model_specification,
+    validate_completed_picks,
+)
+from fantasy_war_room.decision.survival_models import (
+    NextPickSurvivalInputs,
+    OpponentRosterState,
+    SurvivalAdpSnapshotInput,
+    SurvivalCandidateInput,
+    SurvivalCompletedPick,
+    SurvivalDraftContext,
+    SurvivalModelVersion,
+    SurvivalPlayerInput,
 )
 from fantasy_war_room.errors import (
     ConfigurationError,
@@ -1712,6 +1730,71 @@ class IntelligenceRepository(SnapshotRepository):
             ),
         )
 
+    def survival_inputs(
+        self,
+        at: datetime,
+        *,
+        draft_id: str | None,
+        league_id: str | None,
+        sleeper_user_id: str | None,
+        draft_slot: int | None,
+        candidate_player_ids: tuple[str, ...],
+        simulation_count: int,
+        seed: int,
+        model_version: SurvivalModelVersion,
+        adp_source: str | None = None,
+    ) -> tuple[NextPickSurvivalInputs, dict[str, Any]]:
+        """Build one coherent provider-free survival input from immutable snapshots."""
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            connection.begin()
+            try:
+                result = _survival_inputs_from_connection(
+                    connection,
+                    at,
+                    draft_id=draft_id,
+                    league_id=league_id,
+                    sleeper_user_id=sleeper_user_id,
+                    draft_slot=draft_slot,
+                    candidate_player_ids=candidate_player_ids,
+                    simulation_count=simulation_count,
+                    seed=seed,
+                    model_version=model_version,
+                    adp_source=adp_source,
+                )
+                connection.commit()
+                return result
+            except Exception:
+                connection.rollback()
+                raise
+
+    def historical_draft_snapshots(self, draft_id: str) -> tuple[Snapshot, ...]:
+        """Return immutable draft observations without interpreting future labels."""
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE draft_id=? ORDER BY observed_at, snapshot_id",
+                [draft_id],
+            ).fetchall()
+        return tuple(_snapshot_from_row(row) for row in rows)
+
+    def first_label_snapshot(
+        self,
+        draft_id: str,
+        *,
+        after: datetime,
+        required_pick_count: int,
+    ) -> Snapshot | None:
+        """Read the earliest later observation covering a frozen prediction interval."""
+        self.initialize()
+        with duckdb.connect(str(self.path)) as connection:
+            row = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE draft_id=? AND observed_at>? "
+                "AND pick_count>=? ORDER BY observed_at, snapshot_id LIMIT 1",
+                [draft_id, after, required_pick_count],
+            ).fetchone()
+        return _snapshot_from_row(row) if row is not None else None
+
     def board(
         self,
         at: datetime,
@@ -1741,6 +1824,313 @@ class IntelligenceRepository(SnapshotRepository):
                 ],
             ).fetchall()
         return [BoardPlayer.from_row(row) for row in rows]
+
+
+def _survival_inputs_from_connection(
+    connection: duckdb.DuckDBPyConnection,
+    at: datetime,
+    *,
+    draft_id: str | None,
+    league_id: str | None,
+    sleeper_user_id: str | None,
+    draft_slot: int | None,
+    candidate_player_ids: tuple[str, ...],
+    simulation_count: int,
+    seed: int,
+    model_version: SurvivalModelVersion,
+    adp_source: str | None,
+) -> tuple[NextPickSurvivalInputs, dict[str, Any]]:
+    draft_snapshot = _snapshot_from_row(
+        _select_recommendation_draft(connection, at, draft_id, league_id)
+    )
+    team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
+    if draft_type.casefold() != "snake":
+        raise InputError(
+            "unsupported_draft_format",
+            "Next-pick survival supports snake drafts only",
+            {"draft_type": draft_type},
+        )
+    scoring_context = draft_snapshot.scoring_context
+    if scoring_context is None:
+        raise ConfigurationError(
+            "mock_scoring_context_required",
+            "Selected draft has no explicit league scoring context",
+            {"draft_id": draft_snapshot.draft_id},
+        )
+    scoring = scoring_context.get("scoring_settings")
+    if not isinstance(scoring, dict):
+        raise InputError(
+            "incompatible_scoring_context",
+            "Selected draft scoring context has no scoring settings",
+            {"draft_id": draft_snapshot.draft_id},
+        )
+    try:
+        normalized_scoring = {str(key): float(value) for key, value in scoring.items()}
+    except (TypeError, ValueError) as error:
+        raise InputError(
+            "incompatible_scoring_context",
+            "Selected draft scoring settings contain a nonnumeric value",
+            {"draft_id": draft_snapshot.draft_id},
+        ) from error
+    resolved_slot = _resolve_recommendation_draft_slot(draft_snapshot, draft_slot, sleeper_user_id)
+    roster = _recommendation_roster_configuration(scoring_context)
+    season = str(draft_snapshot.draft.get("season") or "")
+    if not season:
+        raise InputError(
+            "incompatible_scoring_context",
+            "Selected draft has no season",
+            {"draft_id": draft_snapshot.draft_id},
+        )
+    player_snapshot_row = connection.execute(
+        "SELECT snapshot_id, observed_at, fetched_at, payload_hash "
+        "FROM player_directory_snapshots WHERE provider='sleeper' AND sport='nfl' "
+        "AND observed_at<=? AND fetched_at<=? ORDER BY observed_at DESC, fetched_at DESC, "
+        "snapshot_id DESC LIMIT 1",
+        [at, at],
+    ).fetchone()
+    if player_snapshot_row is None:
+        raise NotFoundError(
+            "No eligible player-directory snapshot exists as of the decision time",
+            {"as_of": at.isoformat()},
+            code="missing_player_snapshot",
+        )
+    player_snapshot_id = str(player_snapshot_row[0])
+    provider_rows = connection.execute(
+        "SELECT canonical_player_id, provider_player_id FROM player_provider_ids "
+        "WHERE provider='sleeper' AND first_observed_at<=? ORDER BY provider_player_id",
+        [player_snapshot_row[1]],
+    ).fetchall()
+    sleeper_to_canonical = {
+        str(provider_id): str(canonical_id) for canonical_id, provider_id in provider_rows
+    }
+    universe_rows = connection.execute(
+        "SELECT canonical_player_id, provider_player_id, upper(position), "
+        "trim(first_name || ' ' || last_name) FROM player_observations "
+        "WHERE snapshot_id=? AND provider='sleeper' AND canonical_player_id IS NOT NULL "
+        "AND coalesce(active, true)=true "
+        "AND upper(position) IN ('QB','RB','WR','TE','K','DEF','DST') "
+        "QUALIFY row_number() OVER (PARTITION BY canonical_player_id "
+        "ORDER BY provider_player_id)=1 ORDER BY canonical_player_id",
+        [player_snapshot_id],
+    ).fetchall()
+    universe: dict[str, tuple[str, str, str]] = {
+        str(row[0]): (
+            str(row[1]),
+            "DEF" if str(row[2]) == "DST" else str(row[2]),
+            str(row[3]),
+        )
+        for row in universe_rows
+    }
+    completed: list[SurvivalCompletedPick] = []
+    drafted_ids: set[str] = set()
+    roster_counts: dict[int, dict[str, int]] = {
+        slot: {position: 0 for position in ("QB", "RB", "WR", "TE", "K", "DEF")}
+        for slot in range(1, team_count + 1)
+        if slot != resolved_slot
+    }
+    for index, raw_pick in enumerate(draft_snapshot.picks, start=1):
+        try:
+            pick_no = int(raw_pick.get("pick_no", index))
+        except (TypeError, ValueError) as error:
+            raise InputError(
+                "noncontiguous_completed_picks", "Completed draft pick number is invalid"
+            ) from error
+        expected_slot = owner_slot_for_pick(pick_no, team_count)
+        raw_slot = raw_pick.get("draft_slot")
+        if raw_slot is not None:
+            try:
+                normalized_slot = int(raw_slot)
+            except (TypeError, ValueError) as error:
+                raise InputError(
+                    "completed_pick_slot_mismatch", "Completed draft pick slot is invalid"
+                ) from error
+            if normalized_slot != expected_slot:
+                raise InputError(
+                    "completed_pick_slot_mismatch",
+                    "Completed pick slot conflicts with snake draft arithmetic",
+                    {"pick_no": pick_no, "draft_slot": normalized_slot},
+                )
+        sleeper_player_id = _text(raw_pick.get("player_id"))
+        canonical_id = sleeper_to_canonical.get(sleeper_player_id or "")
+        if canonical_id is None:
+            raise InputError(
+                "unresolved_completed_draft_pick",
+                "Completed draft player cannot be resolved exactly",
+                {"pick_no": pick_no, "sleeper_player_id": sleeper_player_id},
+            )
+        metadata = raw_pick.get("metadata")
+        metadata_position = _text(metadata.get("position")) if isinstance(metadata, dict) else None
+        position = universe.get(canonical_id, ("", metadata_position or "", ""))[1].upper()
+        position = "DEF" if position == "DST" else position
+        completed.append(
+            SurvivalCompletedPick(
+                pick_no=pick_no,
+                draft_slot=expected_slot,
+                canonical_player_id=canonical_id,
+                position=position or None,
+            )
+        )
+        drafted_ids.add(canonical_id)
+        if expected_slot != resolved_slot and position in roster_counts[expected_slot]:
+            roster_counts[expected_slot][position] += 1
+    current_pick = draft_snapshot.pick_count + 1
+    validate_completed_picks(
+        tuple(completed), current_overall_pick=current_pick, team_count=team_count
+    )
+    final_pick = team_count * rounds
+    if current_pick > final_pick:
+        raise InputError("draft_complete", "The selected draft has no remaining picks")
+    on_the_clock = owner_slot_for_pick(current_pick, team_count) == resolved_slot
+    next_user = next_scheduled_pick_for_slot(current_pick, resolved_slot, team_count, rounds)
+    if next_user is None:
+        raise InputError(
+            "no_future_target_user_selection",
+            "The user has no future scheduled selection in this draft",
+        )
+    following = next_scheduled_pick_for_slot(next_user + 1, resolved_slot, team_count, rounds)
+    turn = DraftTurnContext(
+        next_overall_pick=current_pick,
+        current_round=(current_pick - 1) // team_count + 1,
+        snake_direction="forward" if ((current_pick - 1) // team_count + 1) % 2 else "reverse",
+        draft_slot=resolved_slot,
+        on_the_clock=on_the_clock,
+        user_next_scheduled_pick=next_user,
+        opponent_picks_before_next_user_pick=next_user - current_pick,
+        user_following_scheduled_pick=following,
+        opponent_picks_between_user_selections=(following - next_user - 1)
+        if following is not None
+        else None,
+    )
+    interval = derive_pass_now_interval(turn, team_count=team_count, round_count=rounds)
+    scoring_format = _recommendation_scoring_format(normalized_scoring)
+    adp_scoring_format = {
+        "full_ppr": "ppr",
+        "half_ppr": "half_ppr",
+        "standard": "standard",
+        "custom": "custom",
+    }[scoring_format]
+    adp_query = (
+        "SELECT * FROM adp_snapshots WHERE observed_at<=? AND imported_at<=? "
+        "AND season=? AND league_size=? AND scoring_format=? AND draft_type=? "
+    )
+    adp_params: list[object] = [
+        at,
+        at,
+        season,
+        team_count,
+        adp_scoring_format,
+        draft_type,
+    ]
+    if adp_source is not None:
+        adp_query += "AND source=? "
+        adp_params.append(adp_source)
+    adp_query += "ORDER BY observed_at DESC, imported_at DESC, adp_snapshot_id DESC LIMIT 1"
+    adp_row = connection.execute(adp_query, adp_params).fetchone()
+    if adp_row is None:
+        raise NotFoundError(
+            "No exact-compatible ADP snapshot exists as of the decision time",
+            {
+                "as_of": at.isoformat(),
+                "season": season,
+                "league_size": team_count,
+                "scoring_format": adp_scoring_format,
+                "draft_type": draft_type,
+                "source": adp_source,
+            },
+            code="missing_compatible_adp_snapshot",
+        )
+    adp_snapshot = AdpSnapshot.from_row(adp_row)
+    adp_rows = connection.execute(
+        "SELECT canonical_player_id, overall_adp, adp_sd, sample_size FROM adp_entries "
+        "WHERE adp_snapshot_id=? AND match_status='matched' AND canonical_player_id IS NOT NULL "
+        "QUALIFY row_number() OVER (PARTITION BY canonical_player_id "
+        "ORDER BY source_row_number)=1 ORDER BY canonical_player_id",
+        [adp_snapshot.adp_snapshot_id],
+    ).fetchall()
+    adp_by_id = {
+        str(row[0]): (float(row[1]), float(row[2]) if row[2] is not None else None, row[3])
+        for row in adp_rows
+    }
+    available_players = tuple(
+        SurvivalPlayerInput(
+            canonical_player_id=canonical_id,
+            sleeper_player_id=values[0],
+            position=values[1],
+            overall_adp=adp_by_id.get(canonical_id, (None, None, None))[0],
+            adp_sd=adp_by_id.get(canonical_id, (None, None, None))[1],
+            sample_size=adp_by_id.get(canonical_id, (None, None, None))[2],
+        )
+        for canonical_id, values in sorted(universe.items())
+        if canonical_id not in drafted_ids
+    )
+    inputs = NextPickSurvivalInputs(
+        decision_at=at,
+        draft=SurvivalDraftContext(
+            draft_snapshot_id=draft_snapshot.snapshot_id,
+            draft_id=draft_snapshot.draft_id,
+            observed_at=draft_snapshot.observed_at,
+            payload_hash=draft_snapshot.payload_hash,
+            team_count=team_count,
+            round_count=rounds,
+            user_draft_slot=resolved_slot,
+            current_overall_pick=interval.current_overall_pick,
+            user_is_on_the_clock=interval.user_is_on_the_clock,
+            simulation_start_pick=interval.simulation_start_pick,
+            target_user_pick=interval.target_user_pick,
+            intervening_opponent_pick_count=interval.intervening_opponent_pick_count,
+        ),
+        adp=SurvivalAdpSnapshotInput(
+            adp_snapshot_id=adp_snapshot.adp_snapshot_id,
+            source=adp_snapshot.source,
+            source_version=adp_snapshot.source_version,
+            observed_at=adp_snapshot.observed_at,
+            imported_at=adp_snapshot.imported_at,
+            payload_hash=adp_snapshot.payload_hash,
+            source_payload_hash=adp_snapshot.source_payload_hash,
+            transformation_version=adp_snapshot.transformation_version,
+            season=adp_snapshot.season,
+            league_size=adp_snapshot.league_size,
+            scoring_format=adp_snapshot.scoring_format,
+        ),
+        available_players=available_players,
+        candidates=tuple(
+            SurvivalCandidateInput(canonical_player_id=player_id)
+            for player_id in candidate_player_ids
+        ),
+        completed_picks=tuple(completed),
+        opponent_rosters=tuple(
+            OpponentRosterState(
+                draft_slot=slot,
+                qb=counts["QB"],
+                rb=counts["RB"],
+                wr=counts["WR"],
+                te=counts["TE"],
+                k=counts["K"],
+                defense=counts["DEF"],
+            )
+            for slot, counts in sorted(roster_counts.items())
+        ),
+        roster_configuration=roster,
+        simulation_count=simulation_count,
+        seed=seed,
+        model_specification=survival_model_specification(model_version),
+    )
+    candidate_names = {
+        player_id: universe[player_id][2]
+        for player_id in candidate_player_ids
+        if player_id in universe
+    }
+    provenance = {
+        "decision_at": at.isoformat(),
+        "draft": inputs.draft.model_dump(mode="json"),
+        "adp": inputs.adp.model_dump(mode="json"),
+        "player_snapshot_id": player_snapshot_id,
+        "player_observed_at": player_snapshot_row[1].isoformat(),
+        "player_fetched_at": player_snapshot_row[2].isoformat(),
+        "player_payload_hash": str(player_snapshot_row[3]),
+        "candidate_names": candidate_names,
+    }
+    return inputs, provenance
 
 
 def _canonical_hash(value: Any) -> str:
