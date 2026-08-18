@@ -181,14 +181,33 @@ def data_refresh_command(
         }
         return result
 
-    _run(
-        "data refresh",
-        json_output,
-        operation,
-        lambda result: stdout.print(
-            "Portable intelligence refreshed; recommendation readiness: "
-            + ("READY" if result["recommendation_ready"] else "NOT READY")
-        ),
+    _run("data refresh", json_output, operation, _render_data_refresh)
+
+
+def _render_data_refresh(result: dict[str, Any]) -> None:
+    sources = result["sources"]
+
+    def state(source: dict[str, Any]) -> str:
+        status = str(source["status"])
+        if status in {"acquired", "unchanged", "current", "derived"}:
+            return "ready"
+        error = source.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return f"FAILED — {error['message']}"
+        return status
+
+    player = sources["player_directory"]
+    adp = sources["adp"]
+    schedule = sources["team_schedule"]
+    board = adp.get("market_board")
+    stdout.print(f"Sleeper players: {state(player)}")
+    stdout.print(f"FFC ADP: {state(adp)}")
+    stdout.print(
+        "Portable market board: " + (state(board) if isinstance(board, dict) else "unavailable")
+    )
+    stdout.print(f"nflverse schedule: {state(schedule)}")
+    stdout.print(
+        "Recommendation readiness: " + ("READY" if result["recommendation_ready"] else "NOT READY")
     )
 
 

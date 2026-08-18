@@ -27,10 +27,12 @@ def _ffc_payload(*, teams: int = 10, scoring: str = "PPR", year: int = 2026) -> 
     return {
         "status": "Success",
         "meta": {
-            "count": 1,
-            "total_count": 1,
-            "page": 1,
-            "total_pages": 1,
+            "type": scoring,
+            "teams": teams,
+            "rounds": 15,
+            "total_drafts": 6809,
+            "start_date": f"{year}-08-11",
+            "end_date": f"{year}-08-18",
         },
         "players": [
             {
@@ -119,14 +121,14 @@ def test_ffc_acquisition_preserves_compatibility_and_dispersion(
     assert route.call_count == 1
 
 
-def test_ffc_rejects_inconsistent_pagination(respx_mock: Any, tmp_path: Path) -> None:
+def test_ffc_rejects_incompatible_response_metadata(respx_mock: Any, tmp_path: Path) -> None:
     url = f"{FFC_BASE_URL}/api/v1/adp/ppr?teams=10&year=2026"
     payload = _ffc_payload()
-    payload["meta"]["count"] = 2
+    payload["meta"]["teams"] = 12
     respx_mock.get(url).mock(return_value=httpx.Response(200, json=payload))
     client = PortableSourceClient(1, tmp_path)
     try:
-        with pytest.raises(ProviderError, match="inconsistent"):
+        with pytest.raises(ProviderError, match="incompatible"):
             acquire_ffc_adp(
                 client,
                 season="2026",
@@ -136,32 +138,6 @@ def test_ffc_rejects_inconsistent_pagination(respx_mock: Any, tmp_path: Path) ->
             )
     finally:
         client.close()
-
-
-def test_ffc_fetches_and_combines_every_page(respx_mock: Any, tmp_path: Path) -> None:
-    url = f"{FFC_BASE_URL}/api/v1/adp/ppr?teams=10&year=2026"
-    first = _ffc_payload()
-    first["meta"] = {"count": 1, "total_count": 2, "page": 1, "total_pages": 2}
-    second = _ffc_payload()
-    second["meta"] = {"count": 1, "total_count": 2, "page": 2, "total_pages": 2}
-    second["players"][0] = {**second["players"][0], "player_id": 8, "name": "Second Player"}
-    respx_mock.get(url).mock(return_value=httpx.Response(200, json=first))
-    second_route = respx_mock.get(f"{url}&page=2").mock(
-        return_value=httpx.Response(200, json=second)
-    )
-    client = PortableSourceClient(1, tmp_path)
-    try:
-        result = acquire_ffc_adp(
-            client,
-            season="2026",
-            league_size=10,
-            scoring_format="full_ppr",
-            draft_type="snake",
-        )
-    finally:
-        client.close()
-    assert result.frame["player_name"].to_list() == ["Portable Player", "Second Player"]
-    assert second_route.call_count == 1
 
 
 def test_ffc_rejects_malformed_payload(respx_mock: Any, tmp_path: Path) -> None:
@@ -414,11 +390,12 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
 ) -> None:
     from conftest import parse_output
     from test_portability import _register_account
-    from test_recommend_integration import ROSTER, SCORING, _fixture
+    from test_recommend_integration import ROSTER, SCORING
 
     from fantasy_war_room import cli
+    from fantasy_war_room.config import load_settings
+    from fantasy_war_room.repository import IntelligenceRepository
 
-    repository = _fixture(tmp_path)
     project = tmp_path / "project"
     monkeypatch.setattr(cli, "REPOSITORY_ROOT", project)
     _register_account(
@@ -429,11 +406,11 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
         with_sync=True,
         scoring_settings=SCORING,
         roster_positions=ROSTER,
-        team_count=2,
+        team_count=12,
         draft_slot_value=1,
     )
-    respx_mock.get(f"{FFC_BASE_URL}/api/v1/adp/ppr?teams=2&year=2026").mock(
-        return_value=httpx.Response(200, json=_ffc_payload(teams=2))
+    respx_mock.get(f"{FFC_BASE_URL}/api/v1/adp/ppr?teams=12&year=2026").mock(
+        return_value=httpx.Response(200, json=_ffc_payload(teams=12))
     )
     respx_mock.get(NFLVERSE_SCHEDULE_URL).mock(
         return_value=httpx.Response(200, content=_valid_schedule_csv())
@@ -447,29 +424,35 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
             "alice",
             "--league-id",
             "league-1",
-            "--ranking-source",
-            "rotoworld",
-            "--recommendation-model",
-            "baseline-1.0",
-            "--db-path",
-            str(repository.path),
             "--non-interactive",
             "--json",
         ],
     )
-    acquired = runner.invoke(cli.app, ["data", "bootstrap", "--json"])
+    acquired = runner.invoke(cli.app, ["data", "refresh", "--json"])
     ready = runner.invoke(cli.app, ["draft-ready", "--json"])
     configured = runner.invoke(cli.app, ["codex", "configure", "--json"])
 
     assert setup.exit_code == acquired.exit_code == ready.exit_code == configured.exit_code == 0
     acquired_data = parse_output(acquired)["data"]
     assert acquired_data["sources"]["adp"]["provider"] == "fantasy-football-calculator"
+    assert acquired_data["sources"]["adp"]["market_board"]["status"] == "derived"
     assert acquired_data["sources"]["team_schedule"]["provider"] == "nflverse"
-    assert parse_output(ready)["data"]["ready"] is True
+    ready_data = parse_output(ready)["data"]
+    assert ready_data["ready"] is True
+    assert ready_data["recommendation_model"] == "portable-market-1.0"
+    assert (
+        next(check for check in ready_data["checks"] if check["name"] == "compatible_adp")["status"]
+        == "pass"
+    )
+    repository = IntelligenceRepository(load_settings().db_path)
+    assert len(repository.adp_snapshots()) == 1
+    with duckdb.connect(str(repository.path), read_only=True) as connection:
+        assert connection.execute("SELECT count(*) FROM market_board_snapshots").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM ranking_snapshots").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM projection_snapshots").fetchone() == (0,)
     generated = parse_output(configured)["data"]
     parsed = tomllib.loads(Path(generated["path"]).read_text(encoding="utf-8"))
     args = parsed["mcp_servers"]["fantasy-war-room"]["args"]
     assert args[args.index("--draft-id") + 1] == "draft-league-1"
     assert args[args.index("--draft-slot") + 1] == "1"
-    assert args[args.index("--model") + 1] == "baseline-1.0"
-    assert args[args.index("--source") + 1] == "rotoworld"
+    assert args[args.index("--model") + 1] == "portable-market-1.0"

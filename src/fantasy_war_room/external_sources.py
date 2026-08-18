@@ -256,40 +256,14 @@ def acquire_ffc_adp(
         raise InputError("invalid_league_size", "League size must be greater than zero")
     endpoint = scoring_to_ffc(scoring_format)
     url = f"{FFC_BASE_URL}/api/v1/adp/{endpoint}?teams={league_size}&year={season}"
-    payloads: list[SourcePayload] = []
-    players: list[Any] = []
-    total_pages: int | None = None
-    total_count: int | None = None
-    page = 1
-    while total_pages is None or page <= total_pages:
-        page_url = url if page == 1 else f"{url}&page={page}"
-        payload = client.fetch(
-            page_url,
-            f"ffc-adp-{season}-{league_size}-{endpoint}-page-{page}.json",
-            force=force,
-        )
-        payloads.append(payload)
-        value = _ffc_json(payload)
-        page_players = cast(list[Any], value["players"])
-        pagination = _ffc_pagination(value.get("meta"), page, len(page_players))
-        if total_pages is None:
-            total_pages, total_count = pagination["total_pages"], pagination["total_count"]
-        elif (pagination["total_pages"], pagination["total_count"]) != (
-            total_pages,
-            total_count,
-        ):
-            raise ProviderError("Fantasy Football Calculator pagination changed during download")
-        players.extend(page_players)
-        page += 1
-    assert total_count is not None
-    if len(players) != total_count:
-        raise ProviderError(
-            "Fantasy Football Calculator returned an incomplete paginated response",
-            {"expected_players": total_count, "received_players": len(players)},
-        )
-    combined_hash = _sha256(b"".join(item.content for item in payloads))
-    fetched_at = max(item.fetched_at for item in payloads)
-    from_cache = all(item.from_cache for item in payloads)
+    payload = client.fetch(
+        url,
+        f"ffc-adp-{season}-{league_size}-{endpoint}.json",
+        force=force,
+    )
+    value = _ffc_json(payload)
+    _validate_ffc_meta(value.get("meta"), endpoint=endpoint, league_size=league_size)
+    players = cast(list[Any], value["players"])
     rows: list[dict[str, Any]] = []
     for index, raw in enumerate(players, start=1):
         if not isinstance(raw, dict):
@@ -325,12 +299,12 @@ def acquire_ffc_adp(
         raise ProviderError("Fantasy Football Calculator returned no ADP players")
     return NormalizedSourceData(
         pl.DataFrame(rows),
-        combined_hash,
+        payload.payload_hash,
         url,
-        fetched_at,
-        combined_hash,
+        payload.fetched_at,
+        payload.payload_hash,
         ADP_TRANSFORMATION_VERSION,
-        from_cache,
+        payload.from_cache,
     )
 
 
@@ -426,24 +400,25 @@ def _ffc_json(payload: SourcePayload) -> dict[str, Any]:
     return value
 
 
-def _ffc_pagination(meta: Any, expected_page: int, player_count: int) -> dict[str, int]:
+def _validate_ffc_meta(meta: Any, *, endpoint: str, league_size: int) -> None:
     if not isinstance(meta, dict):
-        raise ProviderError("Fantasy Football Calculator response has no pagination metadata")
+        raise ProviderError("Fantasy Football Calculator response has no format metadata")
     try:
-        values = {key: int(meta[key]) for key in ("count", "total_count", "page", "total_pages")}
+        teams = int(meta["teams"])
+        response_type = str(meta["type"]).strip().casefold()
     except (KeyError, TypeError, ValueError) as exc:
-        raise ProviderError("Fantasy Football Calculator pagination metadata is malformed") from exc
-    if (
-        values["page"] != expected_page
-        or values["count"] != player_count
-        or not 1 <= values["total_pages"] <= 100
-        or values["total_count"] < player_count
-    ):
+        raise ProviderError("Fantasy Football Calculator format metadata is malformed") from exc
+    expected_type = {"ppr": "ppr", "half-ppr": "half-ppr", "standard": "standard"}[endpoint]
+    if teams != league_size or response_type != expected_type:
         raise ProviderError(
-            "Fantasy Football Calculator pagination metadata is inconsistent",
-            {"expected_page": expected_page, "received": values},
+            "Fantasy Football Calculator returned incompatible ADP data",
+            {
+                "expected_teams": league_size,
+                "received_teams": teams,
+                "expected_type": expected_type,
+                "received_type": response_type,
+            },
         )
-    return values
 
 
 def _normalize_team(value: Any) -> str:

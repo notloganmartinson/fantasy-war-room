@@ -361,7 +361,11 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             "pass" if adp else "missing",
             "Compatible ADP is available"
             if adp
-            else "Optional: import compatible ADP for market context",
+            else (
+                "Run fwr data refresh to acquire exact compatible FFC ADP"
+                if portable_model
+                else "Optional: import compatible ADP for market context"
+            ),
             snapshot_id=str(adp[0]) if adp else None,
             source=str(adp[1]) if adp else None,
             acquisition="automatic",

@@ -316,3 +316,38 @@ def test_data_refresh_orchestrates_players_and_portable_sources(
     payload = __import__("json").loads(result.stdout)
     assert payload["data"]["sources"]["player_directory"]["status"] == "acquired"
     assert calls == {"player_force": True, "closed": True, "bootstrap_force": True}
+
+
+def test_data_refresh_human_output_surfaces_required_provider_failure(
+    monkeypatch: Any,
+) -> None:
+    from fantasy_war_room import cli
+
+    lines: list[str] = []
+    monkeypatch.setattr(cli.stdout, "print", lines.append)
+    cli._render_data_refresh(
+        {
+            "sources": {
+                "player_directory": {"status": "unchanged"},
+                "adp": {
+                    "status": "failed",
+                    "error": {
+                        "code": "provider_error",
+                        "message": "FFC response has no format metadata",
+                        "details": {"unsafe_payload": "not rendered"},
+                    },
+                },
+                "team_schedule": {"status": "acquired"},
+            },
+            "recommendation_ready": False,
+        }
+    )
+
+    assert lines == [
+        "Sleeper players: ready",
+        "FFC ADP: FAILED — FFC response has no format metadata",
+        "Portable market board: unavailable",
+        "nflverse schedule: ready",
+        "Recommendation readiness: NOT READY",
+    ]
+    assert "unsafe_payload" not in "\n".join(lines)
