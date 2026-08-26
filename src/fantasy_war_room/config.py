@@ -12,7 +12,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from fantasy_war_room.errors import ConfigurationError
 
 APP_NAME = "fantasy-war-room"
-CONFIG_SCHEMA_VERSION = "2.0"
+CONFIG_SCHEMA_VERSION = "3.0"
+DraftContextType = Literal["league", "standalone"]
+IntelligenceMode = Literal["quick", "personalized", "advanced"]
 RecommendationModelSelection = Literal[
     "portable-market-1.0",
     "baseline-1.0",
@@ -46,6 +48,20 @@ class LeagueContext(BaseModel):
     strategy: str | None = None
 
 
+class ActiveDraftSession(BaseModel):
+    """Selected draft references; authoritative draft and league facts stay in snapshots."""
+
+    model_config = ConfigDict(frozen=True)
+    schema_version: str = "1.0"
+    provider: str = "sleeper"
+    draft_id: str
+    context_type: DraftContextType
+    season: str
+    source_league_id: str | None = None
+    scoring_context_league_id: str | None = None
+    draft_slot: int | None = Field(default=None, ge=1)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FWR_",
@@ -60,6 +76,8 @@ class Settings(BaseSettings):
     sleeper_league_id: str | None = None
     active_league_id: str | None = None
     league_contexts: dict[str, LeagueContext] = Field(default_factory=dict)
+    active_draft_session: ActiveDraftSession | None = None
+    intelligence_mode: IntelligenceMode | None = None
     season: str = Field(default_factory=lambda: str(datetime.now(UTC).year))
     db_path: Path = Field(default_factory=default_db_path)
     poll_seconds: float = 2.0
@@ -170,6 +188,12 @@ def save_settings(settings: Settings) -> Path:
             key: context.model_dump(mode="json")
             for key, context in sorted(settings.league_contexts.items())
         },
+        "active_draft_session": (
+            settings.active_draft_session.model_dump(mode="json")
+            if settings.active_draft_session is not None
+            else None
+        ),
+        "intelligence_mode": settings.intelligence_mode,
         "season": settings.season,
         "db_path": str(settings.db_path),
         "poll_seconds": settings.poll_seconds,
@@ -216,6 +240,31 @@ def with_league_context(
     )
 
 
+def with_active_draft_session(
+    settings: Settings,
+    *,
+    draft_id: str,
+    context_type: DraftContextType,
+    season: str,
+    source_league_id: str | None,
+    scoring_context_league_id: str | None,
+    draft_slot: int | None,
+) -> Settings:
+    return settings.model_copy(
+        update={
+            "config_schema_version": CONFIG_SCHEMA_VERSION,
+            "active_draft_session": ActiveDraftSession(
+                draft_id=draft_id,
+                context_type=context_type,
+                season=season,
+                source_league_id=source_league_id,
+                scoring_context_league_id=scoring_context_league_id,
+                draft_slot=draft_slot,
+            ),
+        }
+    )
+
+
 def for_resolved_sleeper_user(
     settings: Settings,
     *,
@@ -235,6 +284,8 @@ def for_resolved_sleeper_user(
                 "sleeper_league_id": None,
                 "league_contexts": {},
                 "strategy": None,
+                "active_draft_session": None,
+                "intelligence_mode": None,
             }
         )
     return settings.model_copy(update=updates)

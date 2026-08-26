@@ -174,7 +174,7 @@ def test_legacy_config_migrates_without_losing_preferences(xdg: Path) -> None:
     assert settings.poll_seconds == 3.5
     save_settings(settings)
     persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert persisted["config_schema_version"] == "2.0"
+    assert persisted["config_schema_version"] == "3.0"
     assert "sleeper_league_id" not in persisted
     assert persisted["league_contexts"]["league-7"]["strategy"] == "logan-ppr-2flex-1.0"
 

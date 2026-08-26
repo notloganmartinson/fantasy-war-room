@@ -72,6 +72,42 @@ class McpReadRepository:
         )
         return inputs, snapshot
 
+    def read_draft_state(
+        self, at: datetime | None, *, draft_id: str, sleep: Callable[[float], None] | None = None
+    ) -> Snapshot:
+        """Read only the authoritative draft snapshot; no intelligence tables are selected."""
+        if not self.path.exists():
+            raise NotFoundError(
+                "Fantasy War Room database does not exist",
+                {"database": str(self.path)},
+                code="database_not_found",
+            )
+
+        def operation() -> Snapshot:
+            connection: duckdb.DuckDBPyConnection | None = None
+            try:
+                connection = duckdb.connect(str(self.path), read_only=True)
+                connection.begin()
+                _validate_schema(connection)
+                row = _select_recommendation_draft(
+                    connection, at or datetime.now(UTC), draft_id, None
+                )
+                snapshot = _snapshot_from_row(row)
+                connection.commit()
+                return snapshot
+            except Exception:
+                if connection is not None:
+                    with suppress(Exception):
+                        connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+
+        if sleep is None:
+            return with_database_lock_retry(operation)
+        return with_database_lock_retry(operation, sleep=sleep)
+
     def read_with_market(
         self,
         at: datetime | None,

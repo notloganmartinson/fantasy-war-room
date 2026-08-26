@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +18,7 @@ from fantasy_war_room.bootstrap import (
     generate_codex_config,
     readiness,
     resolve_effective_draft_configuration,
+    resolve_mcp_launch_spec,
 )
 from fantasy_war_room.bootstrap import (
     draft_slot as resolve_setup_draft_slot,
@@ -28,6 +31,7 @@ from fantasy_war_room.config import (
     for_resolved_sleeper_user,
     load_settings,
     save_settings,
+    with_active_draft_session,
     with_league_context,
 )
 from fantasy_war_room.data_bootstrap import bootstrap_data, data_status
@@ -95,6 +99,7 @@ adp_app = typer.Typer(help="Import and inspect immutable ADP snapshots.")
 schedules_app = typer.Typer(help="Import and inspect immutable team schedule snapshots.")
 leagues_app = typer.Typer(help="Inspect and switch saved Sleeper league contexts.")
 codex_app = typer.Typer(help="Configure the project-local Codex integration.")
+mcp_app = typer.Typer(help="Configure a local read-only MCP client.")
 data_app = typer.Typer(help="Acquire and inspect portable football intelligence.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
@@ -105,9 +110,208 @@ app.add_typer(adp_app, name="adp")
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(leagues_app, name="leagues")
 app.add_typer(codex_app, name="codex")
+app.add_typer(mcp_app, name="mcp")
 app.add_typer(data_app, name="data")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _agent_status(settings: Any) -> dict[str, Any]:
+    base = {
+        "schema_version": "1.0",
+        "sleeper_account": {
+            "username": settings.sleeper_username,
+            "user_id": settings.sleeper_user_id,
+        },
+        "selected_league": settings.active_context,
+        "active_session": settings.active_draft_session,
+        "intelligence_mode": settings.intelligence_mode,
+        "strategy": settings.active_strategy,
+        "database": str(settings.db_path.expanduser().resolve()),
+    }
+    if not settings.sleeper_username:
+        return {
+            **base,
+            "state": "needs_input",
+            "question": {
+                "id": "sleeper_username",
+                "prompt": "What is your Sleeper username?",
+                "choices": [],
+            },
+            "readiness": None,
+            "next_actions": [],
+        }
+    if settings.active_context is None:
+        return {
+            **base,
+            "state": "needs_action",
+            "question": None,
+            "readiness": None,
+            "next_actions": [
+                {"id": "discover_leagues", "command": "fwr onboard --json", "safe": True}
+            ],
+        }
+    if settings.active_draft_session is None:
+        return {
+            **base,
+            "state": "needs_action",
+            "question": None,
+            "readiness": None,
+            "next_actions": [
+                {"id": "sync_draft", "command": "fwr setup --non-interactive --json", "safe": True}
+            ],
+        }
+    if settings.intelligence_mode is None:
+        return {
+            **base,
+            "state": "needs_input",
+            "readiness": None,
+            "next_actions": [],
+            "question": {
+                "id": "intelligence_mode",
+                "prompt": "Which setup mode do you want?",
+                "choices": [
+                    {
+                        "id": "quick",
+                        "name": "Quick",
+                        "description": "Automatically acquired portable public market data",
+                    },
+                    {
+                        "id": "personalized",
+                        "name": "Personalized",
+                        "description": (
+                            "Quick mode with strategy customization reserved for the next milestone"
+                        ),
+                    },
+                    {
+                        "id": "advanced",
+                        "name": "Advanced",
+                        "description": "User-supplied rankings and exact-scoring projections",
+                    },
+                ],
+            },
+        }
+    ready = readiness(settings, repository_root=REPOSITORY_ROOT)
+    actions: list[dict[str, Any]] = []
+    checks = {item["name"]: item for item in ready["checks"]}
+    if checks["player_directory"]["status"] != "pass":
+        actions.append({"id": "sync_players", "command": "fwr players sync --json", "safe": True})
+    required_missing = [
+        item for item in ready["checks"] if item["required"] and item["status"] == "fail"
+    ]
+    if settings.intelligence_mode in {"quick", "personalized"} and any(
+        item["name"] in {"compatible_adp", "compatible_market_board"} for item in required_missing
+    ):
+        actions.append(
+            {
+                "id": "refresh_public_intelligence",
+                "command": "fwr data refresh --json",
+                "safe": True,
+            }
+        )
+    if ready["ready"] and checks["codex_mcp_configuration"]["status"] != "pass":
+        actions.append(
+            {
+                "id": "configure_mcp",
+                "command": "fwr mcp configure --client CLIENT --json",
+                "safe": True,
+            }
+        )
+    return {
+        **base,
+        "state": "ready" if ready["ready"] else "needs_action",
+        "question": None,
+        "readiness": ready,
+        "next_actions": actions,
+    }
+
+
+@app.command("status")
+def status_command(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Report unified account, draft-session, intelligence, strategy, and MCP status."""
+    _run(
+        "status",
+        json_output,
+        lambda: _agent_status(load_settings()),
+        lambda value: stdout.print(value),
+    )
+
+
+@app.command("onboard")
+def onboard_command(
+    username: str | None = typer.Option(None, "--username"),
+    league_id: str | None = typer.Option(None, "--league-id"),
+    mode: str | None = typer.Option(None, "--mode"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Advance or inspect the deterministic agent-oriented setup state machine."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(sleeper_username=username)
+        if mode is not None:
+            if mode not in {"quick", "personalized", "advanced"}:
+                raise InputError(
+                    "invalid_intelligence_mode", "--mode must be quick, personalized, or advanced"
+                )
+            settings = settings.model_copy(update={"intelligence_mode": mode})
+            save_settings(settings)
+        if not settings.sleeper_username:
+            return _agent_status(settings)
+        if settings.active_context is None or league_id is not None:
+            client = _client(settings)
+            try:
+                user, leagues = discover_leagues(client, settings.sleeper_username, settings.season)
+                account = for_resolved_sleeper_user(
+                    settings,
+                    user_id=str(user["user_id"]),
+                    username=str(user.get("username") or settings.sleeper_username),
+                )
+                choices = [league.model_dump(mode="json") for league in leagues]
+                selected = (
+                    choose_league_id(
+                        [league.league_id for league in leagues],
+                        league_id,
+                        non_interactive=True,
+                    )
+                    if league_id or len(leagues) <= 1
+                    else None
+                )
+                if selected is None:
+                    save_settings(account)
+                    return {
+                        **_agent_status(account),
+                        "state": "needs_input",
+                        "next_actions": [],
+                        "question": {
+                            "id": "league",
+                            "prompt": "Which Sleeper league do you want to use?",
+                            "choices": choices,
+                        },
+                    }
+                configured = with_league_context(
+                    account, league_id=selected, season=settings.season
+                )
+                ensure_directories(configured)
+                repository = IntelligenceRepository(configured.db_path)
+                snapshot, _ = sync_draft(client, repository, selected)
+                sync_players(client, repository, Path(app_dirs().user_cache_dir))
+                slot = resolve_setup_draft_slot(snapshot, configured.sleeper_user_id)
+                configured = with_active_draft_session(
+                    configured,
+                    draft_id=snapshot.draft_id,
+                    context_type="league",
+                    season=configured.season,
+                    source_league_id=selected,
+                    scoring_context_league_id=selected,
+                    draft_slot=slot,
+                )
+                save_settings(configured)
+                settings = configured
+            finally:
+                client.close()
+        return _agent_status(settings)
+
+    _run("onboard", json_output, operation, lambda value: stdout.print(value))
 
 
 @data_app.command("bootstrap")
@@ -674,6 +878,16 @@ def setup_command(
         finally:
             client.close()
         slot = resolve_setup_draft_slot(snapshot, configured.sleeper_user_id)
+        configured = with_active_draft_session(
+            configured,
+            draft_id=snapshot.draft_id,
+            context_type="league",
+            season=configured.season,
+            source_league_id=selected,
+            scoring_context_league_id=selected,
+            draft_slot=slot,
+        )
+        save_settings(configured)
         ready = readiness(configured, repository_root=REPOSITORY_ROOT)
         return {
             "schema_version": "1.0",
@@ -787,6 +1001,133 @@ def codex_configure(json_output: bool = typer.Option(False, "--json")) -> None:
     )
 
 
+@mcp_app.command("configure")
+def mcp_configure(
+    client: str = typer.Option(..., "--client"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Configure Codex or Claude Code from the same resolved launch specification."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        if client == "codex":
+            return {
+                "client": client,
+                **generate_codex_config(settings, repository_root=REPOSITORY_ROOT),
+            }
+        if client != "claude":
+            raise InputError("unsupported_mcp_client", "--client must be codex or claude")
+        spec = resolve_mcp_launch_spec(settings, repository_root=REPOSITORY_ROOT)
+        command = [
+            "claude",
+            "mcp",
+            "add",
+            "--scope",
+            "local",
+            "--transport",
+            "stdio",
+            "fantasy-war-room",
+            "--",
+            spec.executable,
+            *spec.arguments,
+        ]
+        try:
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        except FileNotFoundError as exc:
+            raise ConfigurationError(
+                "claude_cli_not_found",
+                "Claude Code CLI is not installed or not on PATH",
+                {"command": command},
+            ) from exc
+        if completed.returncode != 0:
+            raise ConfigurationError(
+                "claude_mcp_configuration_failed",
+                "Claude Code could not register the FWR MCP server",
+                {"stderr": completed.stderr.strip(), "command": command},
+            )
+        return {"client": client, **spec.__dict__, "configured": True, "command": command}
+
+    _run(
+        "mcp configure",
+        json_output,
+        operation,
+        lambda result: stdout.print(f"Configured {result['client']}. Restart the client."),
+    )
+
+
+def _draft_id_from_selector(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if "://" in candidate:
+        match = re.search(r"/draft/(?:nfl/)?([A-Za-z0-9_-]+)(?:/|$)", candidate)
+        if match is None:
+            raise InputError("invalid_draft_url", "Sleeper draft URL does not contain a draft ID")
+        return match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
+        raise InputError("invalid_draft_id", "Draft ID contains unsupported characters")
+    return candidate
+
+
+@drafts_app.command("connect")
+def drafts_connect(
+    draft_or_url: str,
+    scoring_context_league_id: str | None = typer.Option(None, "--scoring-context-league-id"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Synchronize and select one exact Sleeper draft or mock."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        draft_id = _draft_id_from_selector(draft_or_url)
+        ensure_directories(settings)
+        client = _client(settings)
+        try:
+            snapshot, created = sync_by_draft_id(
+                client, SnapshotRepository(settings.db_path), draft_id, scoring_context_league_id
+            )
+        finally:
+            client.close()
+        slot = resolve_setup_draft_slot(snapshot, settings.sleeper_user_id)
+        season = str(snapshot.draft.get("season") or settings.season)
+        selected = with_active_draft_session(
+            settings,
+            draft_id=draft_id,
+            context_type=cast(Any, snapshot.draft_context_type),
+            season=season,
+            source_league_id=snapshot.source_league_id,
+            scoring_context_league_id=snapshot.scoring_context_league_id,
+            draft_slot=slot,
+        )
+        save_settings(selected)
+        if snapshot.draft_context_type == "standalone" and snapshot.scoring_context is None:
+            choices = [
+                {"id": item.league_id, "name": item.league_id, "season": item.season}
+                for item in settings.league_contexts.values()
+                if item.season == season
+            ]
+            return {
+                "schema_version": "1.0",
+                "state": "needs_input",
+                "active_session": selected.active_draft_session,
+                "question": {
+                    "id": "scoring_context_league",
+                    "prompt": (
+                        "Which saved league should provide scoring context for this "
+                        "standalone mock?"
+                    ),
+                    "choices": choices,
+                },
+                "created": created,
+            }
+        return {
+            "schema_version": "1.0",
+            "state": "connected",
+            "created": created,
+            "active_session": selected.active_draft_session,
+        }
+
+    _run("drafts connect", json_output, operation, lambda result: stdout.print(result))
+
+
 @app.command()
 def discover(
     username: str | None = typer.Option(None),
@@ -885,8 +1226,12 @@ def watch(
     if league_id and draft_id:
         raise typer.BadParameter("supply either --league-id or --draft-id, not both")
     settings = load_settings(sleeper_league_id=league_id, poll_seconds=interval, db_path=db_path)
+    session = settings.active_draft_session
+    if draft_id is None and league_id is None and session is not None:
+        draft_id = session.draft_id
+        scoring_context_league_id = session.scoring_context_league_id
     if not draft_id and not settings.sleeper_league_id:
-        raise typer.BadParameter("a league ID is required")
+        raise typer.BadParameter("an active draft session, --draft-id, or --league-id is required")
     repository = SnapshotRepository(settings.db_path)
     client = _client(settings)
     try:
@@ -1351,7 +1696,9 @@ def recommend_command(
         selected_model = (
             profile.required_raw_model
             if strategy is not None and profile is not None
-            else (model or effective.recommendation_model)
+            else (
+                model or ("baseline-1.0" if source is not None else effective.recommendation_model)
+            )
         )
         selected_source = source or (
             profile.required_ranking_source

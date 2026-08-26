@@ -42,6 +42,22 @@ class EffectiveDraftConfiguration:
     strategy_profile: StrategyProfile | None
 
 
+@dataclass(frozen=True)
+class ResolvedMcpLaunchSpec:
+    schema_version: str
+    executable: str
+    working_directory: str
+    database: str
+    draft_id: str
+    draft_slot: int
+    ranking_source: str
+    recommendation_model: str
+    strategy: str | None
+    adp_source: str
+    schedule_source: str
+    arguments: tuple[str, ...]
+
+
 def resolve_effective_draft_configuration(settings: Settings) -> EffectiveDraftConfiguration:
     """Resolve explicit context choices, strategy requirements, then portable defaults."""
     context = settings.active_context
@@ -136,6 +152,8 @@ def context_data(settings: Settings) -> dict[str, Any]:
         "user_id": settings.sleeper_user_id,
         "active_league_id": settings.active_league_id,
         "active_context": context,
+        "active_session": settings.active_draft_session,
+        "intelligence_mode": settings.intelligence_mode,
         "database": str(settings.db_path.expanduser().resolve()),
     }
 
@@ -188,11 +206,19 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     repository.initialize()
     now = datetime.now(UTC)
     with duckdb.connect(str(repository.path)) as connection:
-        row = connection.execute(
-            "SELECT * FROM draft_snapshots WHERE league_id=? "
-            "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
-            [context.league_id],
-        ).fetchone()
+        session = settings.active_draft_session
+        if session is not None:
+            row = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE draft_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [session.draft_id],
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE league_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [context.league_id],
+            ).fetchone()
         if row is None:
             check("synchronized_draft_snapshot", True, "fail", "Run fwr setup or fwr sync")
             return _readiness_result(
@@ -463,16 +489,25 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     else:
         check("strategy", False, "skipped", "No personalized strategy selected")
     codex_path = repository_root / ".codex" / "config.toml"
-    configured_codex = (
-        codex_path.exists()
-        and "[mcp_servers.fantasy-war-room]" in codex_path.read_text(encoding="utf-8")
-    )
+    codex_text = codex_path.read_text(encoding="utf-8") if codex_path.exists() else ""
+    has_codex = "[mcp_servers.fantasy-war-room]" in codex_text
+    current_root = str(repository_root.resolve())
+    configured_codex = has_codex and current_root in codex_text
     check(
         "codex_mcp_configuration",
         False,
-        "pass" if configured_codex else "missing",
-        "Project FWR MCP configuration exists" if configured_codex else "Run fwr codex configure",
+        "pass" if configured_codex else ("fail" if has_codex else "missing"),
+        (
+            "Project FWR MCP configuration exists"
+            if configured_codex
+            else (
+                "FWR MCP configuration contains a stale repository path; regenerate it"
+                if has_codex
+                else "Run fwr mcp configure --client codex"
+            )
+        ),
         path=str(codex_path),
+        expected_working_directory=current_root,
     )
     return _readiness_result(
         settings,
@@ -543,6 +578,37 @@ def _readiness_result(
 
 
 def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
+    spec = resolve_mcp_launch_spec(settings, repository_root=repository_root)
+    effective = resolve_effective_draft_configuration(settings)
+    args = list(spec.arguments)
+    block_lines = [
+        "[mcp_servers.fantasy-war-room]",
+        f"command = {json.dumps(spec.executable)}",
+        "args = [",
+        *(f"  {json.dumps(arg)}," for arg in args),
+        "]",
+        f"cwd = {json.dumps(spec.working_directory)}",
+        "startup_timeout_sec = 15",
+        "tool_timeout_sec = 30",
+        "required = false",
+    ]
+    block = "\n".join(block_lines) + "\n"
+    managed_block = f"{MANAGED_START}\n{block}{MANAGED_END}\n"
+    path = repository_root / ".codex" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    updated = _update_codex_toml(existing, managed_block)
+    path.write_text(updated, encoding="utf-8")
+    return {
+        **spec.__dict__,
+        "path": str(path),
+        "written": True,
+        "toml_block": block,
+        "strategy": effective.strategy,
+    }
+
+
+def resolve_mcp_launch_spec(settings: Settings, *, repository_root: Path) -> ResolvedMcpLaunchSpec:
     effective = resolve_effective_draft_configuration(settings)
     state = readiness(settings, repository_root=repository_root)
     failures = [item for item in state["checks"] if item["required"] and item["status"] != "pass"]
@@ -552,8 +618,6 @@ def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[
             "Active draft context is not sufficient to configure Codex",
             {"checks": failures},
         )
-    context = settings.active_context
-    assert context is not None
     args = [
         "run",
         "--project",
@@ -573,37 +637,20 @@ def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[
     if effective.strategy:
         args.extend(["--strategy", effective.strategy])
     uv = shutil.which("uv") or "uv"
-    block_lines = [
-        "[mcp_servers.fantasy-war-room]",
-        f"command = {json.dumps(uv)}",
-        "args = [",
-        *(f"  {json.dumps(arg)}," for arg in args),
-        "]",
-        f"cwd = {json.dumps(str(repository_root))}",
-        "startup_timeout_sec = 15",
-        "tool_timeout_sec = 30",
-        "required = false",
-    ]
-    block = "\n".join(block_lines) + "\n"
-    managed_block = f"{MANAGED_START}\n{block}{MANAGED_END}\n"
-    path = repository_root / ".codex" / "config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    updated = _update_codex_toml(existing, managed_block)
-    path.write_text(updated, encoding="utf-8")
-    return {
-        "schema_version": "1.0",
-        "path": str(path),
-        "written": True,
-        "draft_id": state["draft_id"],
-        "draft_slot": state["draft_slot"],
-        "ranking_source": state["ranking_source"],
-        "recommendation_model": state["recommendation_model"],
-        "strategy": effective.strategy,
-        "database": str(settings.db_path.expanduser().resolve()),
-        "working_directory": str(repository_root),
-        "toml_block": block,
-    }
+    return ResolvedMcpLaunchSpec(
+        schema_version="1.0",
+        executable=uv,
+        working_directory=str(repository_root.resolve()),
+        database=str(settings.db_path.expanduser().resolve()),
+        draft_id=str(state["draft_id"]),
+        draft_slot=int(state["draft_slot"]),
+        ranking_source=str(state["ranking_source"]),
+        recommendation_model=str(state["recommendation_model"]),
+        strategy=effective.strategy,
+        adp_source="local-adp",
+        schedule_source="local-schedule",
+        arguments=tuple(args),
+    )
 
 
 def _update_codex_toml(existing: str, managed_block: str) -> str:
