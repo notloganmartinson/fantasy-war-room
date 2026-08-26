@@ -43,7 +43,7 @@ class ActiveIntelligenceContext:
 def active_intelligence_context(
     settings: Settings, repository: IntelligenceRepository
 ) -> ActiveIntelligenceContext:
-    context = settings.active_context
+    context = settings.draft_configuration_context
     if context is None:
         raise ConfigurationError(
             "active_league_required", "Run fwr setup before bootstrapping football intelligence"
@@ -54,11 +54,18 @@ def active_intelligence_context(
         )
     repository.initialize()
     with duckdb.connect(str(repository.path)) as connection:
-        row = connection.execute(
-            "SELECT draft_id FROM draft_snapshots WHERE league_id=? "
-            "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
-            [context.league_id],
-        ).fetchone()
+        if settings.active_draft_session is not None:
+            row = connection.execute(
+                "SELECT draft_id FROM draft_snapshots WHERE draft_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [settings.active_draft_session.draft_id],
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT draft_id FROM draft_snapshots WHERE league_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [context.league_id],
+            ).fetchone()
     if row is None:
         raise ConfigurationError(
             "draft_snapshot_required", "Run fwr setup to synchronize the active league first"
@@ -246,7 +253,7 @@ def data_status(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         "age_seconds": max(0.0, (now - player[1]).total_seconds()) if player else None,
     }
     configured_readiness = readiness(settings, repository_root=repository_root)
-    active = settings.active_context
+    active = settings.draft_configuration_context
     assert active is not None
     portable_context = active.model_copy(
         update={

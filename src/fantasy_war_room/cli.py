@@ -24,6 +24,7 @@ from fantasy_war_room.bootstrap import (
     draft_slot as resolve_setup_draft_slot,
 )
 from fantasy_war_room.config import (
+    IntelligenceMode,
     RecommendationModelSelection,
     app_dirs,
     config_file_path,
@@ -33,6 +34,7 @@ from fantasy_war_room.config import (
     save_settings,
     with_active_draft_session,
     with_league_context,
+    with_scoring_context,
 )
 from fantasy_war_room.data_bootstrap import bootstrap_data, data_status
 from fantasy_war_room.decision.models import RecommendationModelVersion
@@ -130,67 +132,80 @@ def _agent_status(settings: Any) -> dict[str, Any]:
         "database": str(settings.db_path.expanduser().resolve()),
     }
     if not settings.sleeper_username:
-        return {
-            **base,
-            "state": "needs_input",
-            "question": {
-                "id": "sleeper_username",
-                "prompt": "What is your Sleeper username?",
-                "choices": [],
-            },
-            "readiness": None,
-            "next_actions": [],
-        }
-    if settings.active_context is None:
-        return {
-            **base,
-            "state": "needs_action",
-            "question": None,
-            "readiness": None,
-            "next_actions": [
-                {"id": "discover_leagues", "command": "fwr onboard --json", "safe": True}
-            ],
-        }
-    if settings.active_draft_session is None:
-        return {
-            **base,
-            "state": "needs_action",
-            "question": None,
-            "readiness": None,
-            "next_actions": [
-                {"id": "sync_draft", "command": "fwr setup --non-interactive --json", "safe": True}
-            ],
-        }
-    if settings.intelligence_mode is None:
-        return {
-            **base,
-            "state": "needs_input",
-            "readiness": None,
-            "next_actions": [],
-            "question": {
-                "id": "intelligence_mode",
-                "prompt": "Which setup mode do you want?",
-                "choices": [
-                    {
-                        "id": "quick",
-                        "name": "Quick",
-                        "description": "Automatically acquired portable public market data",
-                    },
-                    {
-                        "id": "personalized",
-                        "name": "Personalized",
-                        "description": (
-                            "Quick mode with strategy customization reserved for the next milestone"
-                        ),
-                    },
-                    {
-                        "id": "advanced",
-                        "name": "Advanced",
-                        "description": "User-supplied rankings and exact-scoring projections",
-                    },
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "question": {
+                    "id": "sleeper_username",
+                    "prompt": "What is your Sleeper username?",
+                    "choices": [],
+                },
+                "readiness": None,
+                "next_actions": [],
+            }
+        )
+    if settings.active_draft_session is None and settings.active_context is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_action",
+                "question": None,
+                "readiness": None,
+                "next_actions": [
+                    {"id": "discover_leagues", "command": "fwr onboard --json", "safe": True}
                 ],
-            },
-        }
+            }
+        )
+    if settings.active_draft_session is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_action",
+                "question": None,
+                "readiness": None,
+                "next_actions": [
+                    {
+                        "id": "sync_draft",
+                        "command": "fwr setup --non-interactive --json",
+                        "safe": True,
+                    }
+                ],
+            }
+        )
+    if settings.intelligence_mode is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "readiness": None,
+                "next_actions": [],
+                "question": {
+                    "id": "intelligence_mode",
+                    "prompt": "Which setup mode do you want?",
+                    "choices": [
+                        {
+                            "id": "quick",
+                            "name": "Quick",
+                            "description": "Automatically acquired portable public market data",
+                        },
+                        {
+                            "id": "personalized",
+                            "name": "Personalized",
+                            "description": (
+                                "Quick mode with strategy customization reserved for the "
+                                "next milestone"
+                            ),
+                        },
+                        {
+                            "id": "advanced",
+                            "name": "Advanced",
+                            "description": "User-supplied rankings and exact-scoring projections",
+                        },
+                    ],
+                },
+            }
+        )
     ready = readiness(settings, repository_root=REPOSITORY_ROOT)
     actions: list[dict[str, Any]] = []
     checks = {item["name"]: item for item in ready["checks"]}
@@ -199,6 +214,60 @@ def _agent_status(settings: Any) -> dict[str, Any]:
     required_missing = [
         item for item in ready["checks"] if item["required"] and item["status"] == "fail"
     ]
+    if settings.intelligence_mode == "advanced":
+        if checks["compatible_ranking"]["status"] != "pass":
+            return _validated_agent_state(
+                {
+                    **base,
+                    "state": "needs_input",
+                    "question": {
+                        "id": "advanced_rankings",
+                        "prompt": (
+                            "Which compatible ranking file and source metadata should FWR import?"
+                        ),
+                        "choices": [
+                            {"id": "quick", "name": "Switch to Quick"},
+                            {"id": "personalized", "name": "Switch to Personalized"},
+                        ],
+                        "required_fields": [
+                            "path",
+                            "source",
+                            "source_version",
+                            "season",
+                            "scoring",
+                            "league_size",
+                        ],
+                        "command": (
+                            "fwr rankings import PATH --source SOURCE --source-version VERSION "
+                            "--season SEASON --scoring SCORING --league-size TEAMS --json"
+                        ),
+                    },
+                    "readiness": ready,
+                    "next_actions": [],
+                }
+            )
+        if checks["compatible_projection"]["status"] != "pass":
+            return _validated_agent_state(
+                {
+                    **base,
+                    "state": "needs_input",
+                    "question": {
+                        "id": "advanced_projections",
+                        "prompt": "Which projection file and source metadata should FWR import?",
+                        "choices": [
+                            {"id": "quick", "name": "Switch to Quick"},
+                            {"id": "personalized", "name": "Switch to Personalized"},
+                        ],
+                        "required_fields": ["path", "season", "source_version"],
+                        "command": (
+                            "fwr projections import-cbs PATH --season SEASON "
+                            "--source-version VERSION --json"
+                        ),
+                    },
+                    "readiness": ready,
+                    "next_actions": [],
+                }
+            )
     if settings.intelligence_mode in {"quick", "personalized"} and any(
         item["name"] in {"compatible_adp", "compatible_market_board"} for item in required_missing
     ):
@@ -217,13 +286,54 @@ def _agent_status(settings: Any) -> dict[str, Any]:
                 "safe": True,
             }
         )
-    return {
-        **base,
-        "state": "ready" if ready["ready"] else "needs_action",
-        "question": None,
-        "readiness": ready,
-        "next_actions": actions,
-    }
+    if not ready["ready"] and not actions:
+        session = settings.active_draft_session
+        command = (
+            f"fwr sync --draft-id {session.draft_id} --json"
+            if session is not None
+            else "fwr onboard --json"
+        )
+        actions.append({"id": "refresh_active_draft", "command": command, "safe": True})
+    return _validated_agent_state(
+        {
+            **base,
+            "state": "ready" if ready["ready"] else "needs_action",
+            "question": None,
+            "readiness": ready,
+            "next_actions": actions,
+        }
+    )
+
+
+def _validated_agent_state(result: dict[str, Any]) -> dict[str, Any]:
+    state = result.get("state")
+    if state == "needs_input" and not isinstance(result.get("question"), dict):
+        raise RuntimeError("needs_input onboarding state requires a structured question")
+    if state == "needs_action" and not result.get("next_actions"):
+        raise RuntimeError("needs_action onboarding state requires at least one next action")
+    if state == "ready":
+        readiness_value = result.get("readiness")
+        if not isinstance(readiness_value, dict) or not readiness_value.get("ready"):
+            raise RuntimeError("ready onboarding state requires complete readiness")
+    return result
+
+
+def _with_intelligence_mode(settings: Any, mode: IntelligenceMode) -> Any:
+    contexts = dict(settings.league_contexts)
+    context = settings.draft_configuration_context
+    if context is not None:
+        contexts[context.league_id] = context.model_copy(
+            update={
+                "recommendation_model": (
+                    "baseline-1.0" if mode == "advanced" else "portable-market-1.0"
+                ),
+                "ranking_source": context.ranking_source if mode == "advanced" else None,
+                "strategy": None if mode in {"quick", "personalized"} else context.strategy,
+            }
+        )
+    return settings.model_copy(
+        update={"intelligence_mode": mode, "league_contexts": contexts, "strategy": None}
+    )
 
 
 @app.command("status")
@@ -253,11 +363,13 @@ def onboard_command(
                 raise InputError(
                     "invalid_intelligence_mode", "--mode must be quick, personalized, or advanced"
                 )
-            settings = settings.model_copy(update={"intelligence_mode": mode})
+            settings = _with_intelligence_mode(settings, cast(IntelligenceMode, mode))
             save_settings(settings)
         if not settings.sleeper_username:
             return _agent_status(settings)
-        if settings.active_context is None or league_id is not None:
+        if (
+            settings.active_draft_session is None and settings.active_context is None
+        ) or league_id is not None:
             client = _client(settings)
             try:
                 user, leagues = discover_leagues(client, settings.sleeper_username, settings.season)
@@ -278,19 +390,23 @@ def onboard_command(
                 )
                 if selected is None:
                     save_settings(account)
-                    return {
-                        **_agent_status(account),
-                        "state": "needs_input",
-                        "next_actions": [],
-                        "question": {
-                            "id": "league",
-                            "prompt": "Which Sleeper league do you want to use?",
-                            "choices": choices,
-                        },
-                    }
+                    return _validated_agent_state(
+                        {
+                            **_agent_status(account),
+                            "state": "needs_input",
+                            "next_actions": [],
+                            "question": {
+                                "id": "league",
+                                "prompt": "Which Sleeper league do you want to use?",
+                                "choices": choices,
+                            },
+                        }
+                    )
                 configured = with_league_context(
                     account, league_id=selected, season=settings.season
                 )
+                if configured.intelligence_mode is not None:
+                    configured = _with_intelligence_mode(configured, configured.intelligence_mode)
                 ensure_directories(configured)
                 repository = IntelligenceRepository(configured.db_path)
                 snapshot, _ = sync_draft(client, repository, selected)
@@ -955,6 +1071,8 @@ def leagues_use(league_id: str, json_output: bool = typer.Option(False, "--json"
                 "sleeper_league_id": league_id,
                 "season": context.season,
                 "strategy": None,
+                "active_draft_session": None,
+                "active_draft_session_invalidated": True,
             }
         )
         save_settings(selected)
@@ -1032,7 +1150,13 @@ def mcp_configure(
             *spec.arguments,
         ]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            completed = subprocess.run(
+                command,
+                cwd=spec.working_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         except FileNotFoundError as exc:
             raise ConfigurationError(
                 "claude_cli_not_found",
@@ -1098,6 +1222,14 @@ def drafts_connect(
             client.close()
         slot = resolve_setup_draft_slot(snapshot, settings.sleeper_user_id)
         season = draft_season
+        if snapshot.scoring_context_league_id is not None:
+            settings = with_scoring_context(
+                settings,
+                league_id=snapshot.scoring_context_league_id,
+                season=season,
+            )
+            if settings.intelligence_mode is not None:
+                settings = _with_intelligence_mode(settings, settings.intelligence_mode)
         selected = with_active_draft_session(
             settings,
             draft_id=draft_id,
@@ -1250,6 +1382,10 @@ def watch(
         raise typer.BadParameter("supply either --league-id or --draft-id, not both")
     settings = load_settings(sleeper_league_id=league_id, poll_seconds=interval, db_path=db_path)
     session = settings.active_draft_session
+    if draft_id is None and league_id is None and settings.active_draft_session_invalidated:
+        raise typer.BadParameter(
+            "the previous draft session was invalidated; run fwr onboard before watching"
+        )
     if draft_id is None and league_id is None and session is not None:
         draft_id = session.draft_id
         scoring_context_league_id = session.scoring_context_league_id

@@ -60,7 +60,7 @@ class ResolvedMcpLaunchSpec:
 
 def resolve_effective_draft_configuration(settings: Settings) -> EffectiveDraftConfiguration:
     """Resolve explicit context choices, strategy requirements, then portable defaults."""
-    context = settings.active_context
+    context = settings.draft_configuration_context
     if context is None:
         return EffectiveDraftConfiguration(
             recommendation_model="baseline-1.0",
@@ -145,13 +145,14 @@ def draft_slot(snapshot: Snapshot, sleeper_user_id: str | None) -> int | None:
 
 
 def context_data(settings: Settings) -> dict[str, Any]:
-    context = settings.active_context
+    context = settings.draft_configuration_context
     return {
         "schema_version": "1.0",
         "username": settings.sleeper_username,
         "user_id": settings.sleeper_user_id,
         "active_league_id": settings.active_league_id,
-        "active_context": context,
+        "active_context": settings.active_context,
+        "draft_configuration_context": context,
         "active_session": settings.active_draft_session,
         "intelligence_mode": settings.intelligence_mode,
         "database": str(settings.db_path.expanduser().resolve()),
@@ -172,7 +173,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             }
         )
 
-    context = settings.active_context
+    context = settings.draft_configuration_context
     configured = bool(settings.sleeper_username and settings.sleeper_user_id)
     check(
         "user_configuration",
@@ -184,15 +185,41 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         "active_league",
         True,
         "pass" if context else "fail",
-        "Active league selected" if context else "Run fwr setup and select a league",
+        (
+            "Draft configuration context resolved"
+            if context
+            else "Select or save the active session's league/scoring context"
+        ),
     )
     effective = resolve_effective_draft_configuration(settings) if context is not None else None
+    check(
+        "active_draft_session",
+        True,
+        "fail" if settings.active_draft_session_invalidated else "pass",
+        (
+            "League selection changed; establish its active draft session"
+            if settings.active_draft_session_invalidated
+            else (
+                "Active draft session selected"
+                if settings.active_draft_session is not None
+                else "Legacy active-league draft resolution remains available"
+            )
+        ),
+    )
+    if settings.active_draft_session_invalidated:
+        return _readiness_result(
+            settings,
+            checks,
+            None,
+            None,
+            strategy_selected=bool(effective and effective.strategy),
+        )
     if context is None or not settings.db_path.expanduser().exists():
         check(
             "synchronized_draft_snapshot",
             True,
             "fail",
-            "No local database or active league snapshot",
+            "No local database or active draft configuration context",
         )
         return _readiness_result(
             settings,
@@ -230,6 +257,33 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             )
         snapshot = repository.state_at(str(row[2]), now)
         assert snapshot is not None
+        session_error: str | None = None
+        if session is not None:
+            if session.context_type == "league":
+                consistent = (
+                    session.source_league_id is not None
+                    and session.source_league_id == session.scoring_context_league_id
+                    and snapshot.source_league_id == session.source_league_id
+                    and snapshot.scoring_context_league_id == session.scoring_context_league_id
+                )
+            else:
+                consistent = (
+                    session.source_league_id is None
+                    and snapshot.source_league_id is None
+                    and session.scoring_context_league_id is not None
+                    and snapshot.scoring_context_league_id == session.scoring_context_league_id
+                )
+            if not consistent:
+                session_error = "Active draft session does not match snapshot provenance"
+        check(
+            "session_context_consistency",
+            True,
+            "fail" if session_error else "pass",
+            session_error or "Active draft and scoring-context provenance are consistent",
+            draft_id=snapshot.draft_id,
+            source_league_id=snapshot.source_league_id,
+            scoring_context_league_id=snapshot.scoring_context_league_id,
+        )
         check(
             "synchronized_draft_snapshot",
             True,
@@ -532,9 +586,11 @@ def _readiness_result(
     definitions = {
         "user_configuration": (True, "Configure a Sleeper user"),
         "active_league": (True, "Select an active league"),
+        "active_draft_session": (True, "Establish an active draft session"),
         "supported_format": (True, "Synchronize a supported league format"),
         "synchronized_draft_snapshot": (True, "Synchronize the current draft"),
         "current_draft_id": (True, "Identify the current draft"),
+        "session_context_consistency": (True, "Resolve a consistent active draft session"),
         "draft_slot": (True, "Draft slot is pending or unavailable"),
         "player_directory": (True, "Synchronize the player directory"),
         "compatible_ranking": (True, "Import compatible ranking data"),

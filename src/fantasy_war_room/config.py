@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     active_league_id: str | None = None
     league_contexts: dict[str, LeagueContext] = Field(default_factory=dict)
     active_draft_session: ActiveDraftSession | None = None
+    active_draft_session_invalidated: bool = False
     intelligence_mode: IntelligenceMode | None = None
     season: str = Field(default_factory=lambda: str(datetime.now(UTC).year))
     db_path: Path = Field(default_factory=default_db_path)
@@ -100,18 +101,34 @@ class Settings(BaseSettings):
         return self.league_contexts.get(league_id)
 
     @property
+    def draft_configuration_context(self) -> LeagueContext | None:
+        """Resolve preferences for the exact active session, with a legacy fallback."""
+        session = self.active_draft_session
+        if session is None:
+            return self.active_context
+        if session.context_type == "league":
+            context_id = session.source_league_id
+            if context_id is None or session.scoring_context_league_id != context_id:
+                return None
+        else:
+            context_id = session.scoring_context_league_id
+            if session.source_league_id is not None or context_id is None:
+                return None
+        return self.league_contexts.get(context_id)
+
+    @property
     def active_strategy(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.strategy if context is not None else self.strategy
 
     @property
     def active_ranking_source(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.ranking_source if context is not None else None
 
     @property
     def active_recommendation_model(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.recommendation_model if context is not None else None
 
 
@@ -193,6 +210,7 @@ def save_settings(settings: Settings) -> Path:
             if settings.active_draft_session is not None
             else None
         ),
+        "active_draft_session_invalidated": settings.active_draft_session_invalidated,
         "intelligence_mode": settings.intelligence_mode,
         "season": settings.season,
         "db_path": str(settings.db_path),
@@ -228,16 +246,22 @@ def with_league_context(
         recommendation_model=selected_model,
         strategy=strategy if strategy is not None else (previous.strategy if previous else None),
     )
-    return settings.model_copy(
-        update={
-            "config_schema_version": CONFIG_SCHEMA_VERSION,
-            "active_league_id": league_id,
-            "sleeper_league_id": league_id,
-            "season": season,
-            "league_contexts": contexts,
-            "strategy": None,
-        }
-    )
+    updates: dict[str, Any] = {
+        "config_schema_version": CONFIG_SCHEMA_VERSION,
+        "active_league_id": league_id,
+        "sleeper_league_id": league_id,
+        "season": season,
+        "league_contexts": contexts,
+        "strategy": None,
+    }
+    if settings.active_league_id != league_id:
+        updates.update(
+            {
+                "active_draft_session": None,
+                "active_draft_session_invalidated": True,
+            }
+        )
+    return settings.model_copy(update=updates)
 
 
 def with_active_draft_session(
@@ -261,8 +285,21 @@ def with_active_draft_session(
                 scoring_context_league_id=scoring_context_league_id,
                 draft_slot=draft_slot,
             ),
+            "active_draft_session_invalidated": False,
         }
     )
+
+
+def with_scoring_context(settings: Settings, *, league_id: str, season: str) -> Settings:
+    """Save minimal preferences for an explicitly selected scoring context."""
+    contexts = dict(settings.league_contexts)
+    if league_id not in contexts:
+        contexts[league_id] = LeagueContext(
+            league_id=league_id,
+            season=season,
+            recommendation_model="portable-market-1.0",
+        )
+    return settings.model_copy(update={"league_contexts": contexts})
 
 
 def for_resolved_sleeper_user(
@@ -285,6 +322,7 @@ def for_resolved_sleeper_user(
                 "league_contexts": {},
                 "strategy": None,
                 "active_draft_session": None,
+                "active_draft_session_invalidated": False,
                 "intelligence_mode": None,
             }
         )
