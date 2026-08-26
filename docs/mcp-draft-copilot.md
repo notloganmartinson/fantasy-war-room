@@ -52,7 +52,9 @@ simulated availability rates, not ground-truth probabilities.
 
 ## Boundary and safety model
 
-The MCP process is bound to one explicitly supplied draft ID at startup. A tool
+The MCP process is bound to one explicitly supplied draft ID at startup. The client-neutral
+launch resolver obtains that ID from the persisted active draft session, including an exact
+standalone mock; it never substitutes the scoring-context league's draft. A tool
 cannot switch to another draft. `fwr watch` remains the only process refreshing
 that context. MCP v1 does not infer a draft from the configured league.
 
@@ -163,12 +165,14 @@ the first release.
 
 ## Configuration
 
-Generate exact project-local configuration from the active league context:
+Generate exact client configuration from the active draft session:
 
 ```console
 uv run fwr data refresh
 uv run fwr draft-ready
 uv run fwr codex configure
+uv run fwr mcp configure --client codex --json
+# or: uv run fwr mcp configure --client claude --json
 ```
 
 `data refresh` caches sanitized provider payloads under the XDG cache directory and persists
@@ -176,7 +180,7 @@ normalized immutable snapshots with source URI/version/hash and fetch, observati
 times. Fantasy Football Calculator asks API users to attribute its ADP data. nflverse schedule
 data is CC BY 4.0. Unresolved player rows remain explicit and fuzzy matching is never used.
 
-The ignored `.codex/config.toml` receives the active league's exact draft ID, resolved draft
+The ignored `.codex/config.toml` receives the active session's exact draft ID, resolved draft
 slot, ranking source, recommendation model, optional strategy, DuckDB path, and repository
 working directory. Generation owns an explicitly marked FWR block and preserves unrelated
 project configuration. Valid equivalent unmanaged tables, including quoted TOML keys, cause a

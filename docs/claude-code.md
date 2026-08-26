@@ -4,7 +4,13 @@ Fantasy War Room exposes a client-independent local stdio MCP server. Codex is t
 integration, but Claude Code can connect to the same `fwr-mcp` entry point. The server remains
 read-only and network-free; synchronization runs separately through the FWR CLI.
 
-## Prerequisites
+## Agent-native setup
+
+From the repository root, start `claude` and say “Set up Fantasy War Room for me.” Claude follows
+the shared protocol in `AGENTS.md`, drives `fwr onboard --json`, and registers the resolved local
+server with `fwr mcp configure --client claude --json`. Restart Claude Code when instructed.
+
+## Manual prerequisites
 
 Complete the normal onboarding and confirm that the active draft is ready:
 
@@ -69,13 +75,12 @@ Standalone mocks that need league scoring context must have been synchronized wi
 [the MCP guide](mcp-draft-copilot.md#configuration). The MCP server cannot attach or change that
 context.
 
-## Why setup is manual
+## Client-neutral launch resolution
 
-FWR currently resolves MCP startup values through `fwr codex configure`, which writes a
-Codex-specific project configuration. It does not emit or install a Claude Code registration, so
-a completely portable one-command Claude setup is not currently available. The manual local
-registration above invokes the same implemented server with the same resolved arguments; it does
-not require a new protocol or server mode.
+FWR resolves the executable, current repository path, database, active draft session, draft slot,
+source, model, and optional strategy once. The Codex and Claude adapters consume that same launch
+specification. Claude registration uses its supported local-scope MCP CLI; FWR does not invent or
+write a proprietary Claude configuration format.
 
 Re-run the registration when the selected league, draft, draft slot, ranking source, model,
 strategy, or database path changes. Remove the old entry first with:

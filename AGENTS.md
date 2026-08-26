@@ -101,3 +101,22 @@ than hard-coded.
 
 Expansion beyond this boundary should happen only when a real workflow
 requires it and should not weaken existing deterministic behavior.
+
+## Agent-native setup protocol
+
+When a user asks to set up or use Fantasy War Room:
+
+1. Run `uv sync` when dependencies are not installed.
+2. Run `uv run fwr onboard --json`.
+3. If `state` is `needs_input`, ask exactly the structured `question`; pass the answer back with
+   the supported CLI option and rerun onboarding.
+4. If `state` is `needs_action`, execute its deterministic safe `next_actions` and rerun.
+5. Configure the current client with `uv run fwr mcp configure --client codex --json` or
+   `--client claude`, then tell the user to restart that client.
+6. Verify the configured read-only MCP and tell the user to run `uv run fwr watch` in a separate
+   terminal for live synchronization.
+
+Use `uv run fwr drafts connect DRAFT_OR_URL --json` when the user supplies a standalone mock.
+Never guess a Sleeper identity, league, mock scoring context, draft slot, intelligence source,
+projection source, strategy, or recommendation. FWR's structured state and CLI writes are
+authoritative; MCP remains read-only and network-free.

@@ -64,6 +64,25 @@ while FWR remains the source of draft facts, rankings, projections, ADP, and sim
 
 Python 3.12 and [uv](https://docs.astral.sh/uv/) are required.
 
+The primary setup flow is agent-native:
+
+```console
+git clone https://github.com/notloganmartinson/fantasy-war-room.git
+cd fantasy-war-room
+codex
+```
+
+Then say: **“Set up Fantasy War Room for me.”** Codex follows FWR's structured onboarding state,
+asks only for required human choices, configures the project-local MCP, and tells you when a
+restart is needed. Claude Code supports the equivalent flow: run `claude` in the repository and
+make the same request. Both clients consume one FWR-resolved MCP launch specification.
+
+For a standalone Sleeper mock, give the agent its draft URL or ID. FWR selects that exact draft;
+if exact scoring requires a league context, the agent presents compatible choices and never
+borrows another league silently.
+
+Manual CLI onboarding remains supported:
+
 ```console
 git clone https://github.com/notloganmartinson/fantasy-war-room.git
 cd fantasy-war-room
@@ -73,6 +92,17 @@ uv run fwr data refresh
 uv run fwr data status
 uv run fwr draft-ready
 uv run fwr codex configure
+```
+
+Agent/state-machine equivalents include:
+
+```console
+uv run fwr onboard --json
+uv run fwr status --json
+uv run fwr drafts connect DRAFT_OR_URL --json
+uv run fwr mcp configure --client codex --json
+uv run fwr mcp configure --client claude --json
+uv run fwr watch
 ```
 
 `setup` resolves the Sleeper account, selects a league, synchronizes its authoritative draft
