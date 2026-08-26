@@ -227,6 +227,13 @@ def load_settings(**cli_values: Any) -> Settings:
 
 
 def save_settings(settings: Settings) -> Path:
+    compatible, reason = active_session_compatibility(settings)
+    if settings.active_draft_session is not None and not compatible:
+        raise ConfigurationError(
+            "active_draft_session_incompatible",
+            "Refusing to persist an active draft session incompatible with the selected league",
+            {"reason": reason},
+        )
     path = config_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     persisted = {
@@ -307,8 +314,39 @@ def with_active_draft_session(
     scoring_context_league_id: str | None,
     draft_slot: int | None,
 ) -> Settings:
-    return settings.model_copy(
-        update={
+    updates: dict[str, Any] = {}
+    if scoring_context_league_id is not None:
+        if scoring_context_league_id not in settings.league_contexts:
+            raise ConfigurationError(
+                "draft_configuration_context_missing",
+                "Active draft session requires a saved scoring/configuration league context",
+                {"scoring_context_league_id": scoring_context_league_id},
+            )
+        if context_type == "league" and source_league_id != scoring_context_league_id:
+            raise ConfigurationError(
+                "draft_session_context_mismatch",
+                "League draft source and scoring context must identify the same league",
+            )
+        if context_type == "standalone" and source_league_id is not None:
+            raise ConfigurationError(
+                "draft_session_context_mismatch",
+                "Standalone draft session cannot have a source league",
+            )
+        context = settings.league_contexts[scoring_context_league_id]
+        updates.update(
+            {
+                "active_league_id": scoring_context_league_id,
+                "sleeper_league_id": scoring_context_league_id,
+                "season": context.season,
+            }
+        )
+    elif context_type != "standalone" or source_league_id is not None:
+        raise ConfigurationError(
+            "draft_session_context_missing",
+            "League draft session requires a scoring/configuration league context",
+        )
+    updates.update(
+        {
             "config_schema_version": CONFIG_SCHEMA_VERSION,
             "active_draft_session": ActiveDraftSession(
                 draft_id=draft_id,
@@ -321,6 +359,7 @@ def with_active_draft_session(
             "active_draft_session_invalidated": False,
         }
     )
+    return settings.model_copy(update=updates)
 
 
 def with_scoring_context(settings: Settings, *, league_id: str, season: str) -> Settings:

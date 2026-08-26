@@ -110,7 +110,8 @@ def test_connect_standalone_url_preserves_separate_scoring_context(
     assert session.source_league_id is None
     assert session.scoring_context_league_id == "l1"
     assert session.draft_slot == 4
-    assert configured.active_league_id is None
+    assert configured.active_league_id == "l1"
+    assert configured.sleeper_league_id == "l1"
     assert configured.draft_configuration_context is not None
     assert configured.draft_configuration_context.league_id == "l1"
     onboard = runner.invoke(app, ["onboard", "--json"])
@@ -665,6 +666,181 @@ def test_standalone_with_scoring_context_advanced_requests_custom_rankings(
     result = _agent_status(settings)
     assert result["state"] == "needs_input"
     assert result["question"]["id"] == "advanced_rankings"
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_connect_selects_different_scoring_league_and_preserves_mock_on_reload(
+    api: Any, runner: CliRunner, xdg: Path, tmp_path: Path, monkeypatch: Any
+) -> None:
+    from test_recommend_integration import ROSTER, SCORING, _fixture
+
+    repository = _fixture(tmp_path)
+    base = "https://api.sleeper.app/v1"
+    draft = {
+        "draft_id": "mock-1",
+        "league_id": None,
+        "season": "2026",
+        "type": "snake",
+        "settings": {"teams": 2, "rounds": 6},
+        "draft_order": {"user-1": 2},
+    }
+    league = {
+        "league_id": "league-1",
+        "season": "2026",
+        "settings": {"type": 0},
+        "scoring_settings": SCORING,
+        "roster_positions": ROSTER,
+    }
+    api.get(f"{base}/draft/mock-1").mock(return_value=httpx.Response(200, json=draft))
+    api.get(f"{base}/draft/mock-1/picks").mock(return_value=httpx.Response(200, json=[]))
+    api.get(f"{base}/league/league-1").mock(return_value=httpx.Response(200, json=league))
+    save_settings(
+        Settings(
+            sleeper_username="alice",
+            sleeper_user_id="user-1",
+            active_league_id="other",
+            sleeper_league_id="other",
+            db_path=repository.path,
+            league_contexts={
+                "other": LeagueContext(league_id="other", season="2026"),
+                "league-1": LeagueContext(
+                    league_id="league-1",
+                    season="2026",
+                    ranking_source="rotoworld",
+                    recommendation_model="baseline-1.0",
+                ),
+            },
+        )
+    )
+    connected = runner.invoke(
+        app,
+        [
+            "drafts",
+            "connect",
+            "mock-1",
+            "--scoring-context-league-id",
+            "league-1",
+            "--json",
+        ],
+    )
+    assert connected.exit_code == 0, connected.stdout
+    immediate = load_settings()
+    assert immediate.active_league_id == immediate.sleeper_league_id == "league-1"
+    assert immediate.active_draft_session is not None
+    assert immediate.active_draft_session.draft_id == "mock-1"
+    assert immediate.active_draft_session.scoring_context_league_id == "league-1"
+    assert immediate.active_draft_session_invalidated is False
+    persisted = config_file_path().read_text(encoding="utf-8")
+    reloaded = load_settings()
+    assert reloaded.active_draft_session == immediate.active_draft_session
+
+    watched: dict[str, Any] = {}
+
+    def fake_watch(*args: Any, **kwargs: Any) -> None:
+        watched.update(draft_id=args[2], scoring_context_league_id=args[4])
+
+    monkeypatch.setattr("fantasy_war_room.cli.watch_by_draft_id", fake_watch)
+    assert runner.invoke(app, ["watch"]).exit_code == 0
+    assert watched == {
+        "draft_id": "mock-1",
+        "scoring_context_league_id": "league-1",
+    }
+    spec = resolve_mcp_launch_spec(reloaded, repository_root=tmp_path / "project")
+    assert spec.draft_id == "mock-1"
+    assert spec.draft_id != "draft-1"
+
+    reconnected = runner.invoke(
+        app,
+        [
+            "drafts",
+            "connect",
+            "mock-1",
+            "--scoring-context-league-id",
+            "league-1",
+            "--json",
+        ],
+    )
+    assert reconnected.exit_code == 0, reconnected.stdout
+    assert config_file_path().read_text(encoding="utf-8") == persisted
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_connect_switches_exact_mock_within_same_scoring_context(
+    api: Any, runner: CliRunner, xdg: Path
+) -> None:
+    base = "https://api.sleeper.app/v1"
+    league = {"league_id": "b", "season": "2026", "scoring_settings": {"rec": 1}}
+    for draft_id in ("m", "n"):
+        api.get(f"{base}/draft/{draft_id}").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "draft_id": draft_id,
+                    "league_id": None,
+                    "season": "2026",
+                    "type": "snake",
+                    "settings": {"teams": 10, "rounds": 15},
+                },
+            )
+        )
+        api.get(f"{base}/draft/{draft_id}/picks").mock(return_value=httpx.Response(200, json=[]))
+    api.get(f"{base}/league/b").mock(return_value=httpx.Response(200, json=league))
+    save_settings(
+        Settings(
+            active_league_id="b",
+            sleeper_league_id="b",
+            league_contexts={"b": LeagueContext(league_id="b", season="2026")},
+        )
+    )
+    for draft_id in ("m", "n"):
+        result = runner.invoke(
+            app,
+            [
+                "drafts",
+                "connect",
+                draft_id,
+                "--scoring-context-league-id",
+                "b",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.stdout
+    settings = load_settings()
+    assert settings.active_league_id == "b"
+    assert settings.active_draft_session is not None
+    assert settings.active_draft_session.draft_id == "n"
+
+
+@respx.mock(base_url="https://api.sleeper.app/v1")
+def test_connect_league_draft_selects_its_league_and_exact_draft(
+    api: Any, runner: CliRunner, xdg: Path
+) -> None:
+    base = "https://api.sleeper.app/v1"
+    league = {"league_id": "b", "season": "2026", "scoring_settings": {"rec": 1}}
+    draft = {
+        "draft_id": "draft-b-exact",
+        "league_id": "b",
+        "season": "2026",
+        "type": "snake",
+        "settings": {"teams": 10, "rounds": 15},
+    }
+    api.get(f"{base}/draft/draft-b-exact").mock(return_value=httpx.Response(200, json=draft))
+    api.get(f"{base}/draft/draft-b-exact/picks").mock(return_value=httpx.Response(200, json=[]))
+    api.get(f"{base}/league/b").mock(return_value=httpx.Response(200, json=league))
+    save_settings(
+        Settings(
+            active_league_id="a",
+            sleeper_league_id="a",
+            league_contexts={"a": LeagueContext(league_id="a", season="2026")},
+        )
+    )
+    result = runner.invoke(app, ["drafts", "connect", "draft-b-exact", "--json"])
+    assert result.exit_code == 0, result.stdout
+    settings = load_settings()
+    assert settings.active_league_id == settings.sleeper_league_id == "b"
+    assert settings.active_draft_session is not None
+    assert settings.active_draft_session.draft_id == "draft-b-exact"
+    assert settings.active_draft_session.source_league_id == "b"
 
 
 def test_claude_registration_uses_resolved_repository_cwd(
