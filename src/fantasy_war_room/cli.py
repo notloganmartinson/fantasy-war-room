@@ -26,6 +26,7 @@ from fantasy_war_room.bootstrap import (
 from fantasy_war_room.config import (
     IntelligenceMode,
     RecommendationModelSelection,
+    active_session_compatibility,
     app_dirs,
     config_file_path,
     ensure_directories,
@@ -171,6 +172,39 @@ def _agent_status(settings: Any) -> dict[str, Any]:
                         "safe": True,
                     }
                 ],
+            }
+        )
+    session = settings.active_draft_session
+    if session.context_type == "standalone" and settings.draft_configuration_context is None:
+        choices = [
+            {
+                "id": context.league_id,
+                "name": context.league_id,
+                "season": context.season,
+            }
+            for context in sorted(
+                settings.league_contexts.values(), key=lambda item: item.league_id
+            )
+            if context.season == session.season
+        ]
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "readiness": None,
+                "next_actions": [],
+                "question": {
+                    "id": "scoring_context_league",
+                    "prompt": (
+                        "Which saved Sleeper league should provide scoring context for this "
+                        "standalone mock?"
+                    ),
+                    "choices": choices,
+                    "command": (
+                        f"fwr drafts connect {session.draft_id} "
+                        "--scoring-context-league-id LEAGUE_ID --json"
+                    ),
+                },
             }
         )
     if settings.intelligence_mode is None:
@@ -1386,6 +1420,11 @@ def watch(
         raise typer.BadParameter("supply either --league-id or --draft-id, not both")
     settings = load_settings(sleeper_league_id=league_id, poll_seconds=interval, db_path=db_path)
     session = settings.active_draft_session
+    session_compatible, session_error = active_session_compatibility(settings)
+    if session is not None and not session_compatible:
+        raise typer.BadParameter(
+            session_error or "active draft session is incompatible with the selected league"
+        )
     if draft_id is None and league_id is None and settings.active_draft_session_invalidated:
         raise typer.BadParameter(
             "the previous draft session was invalidated; run fwr onboard before watching"

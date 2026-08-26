@@ -132,6 +132,30 @@ class Settings(BaseSettings):
         return context.recommendation_model if context is not None else None
 
 
+def active_session_compatibility(settings: Settings) -> tuple[bool, str | None]:
+    """Validate an active session against its structure and effective league selection."""
+    session = settings.active_draft_session
+    if session is None:
+        return True, None
+    if session.context_type == "league":
+        context_league_id = session.source_league_id
+        if context_league_id is None or session.scoring_context_league_id != context_league_id:
+            return False, "league session source and scoring context must identify one league"
+    else:
+        context_league_id = session.scoring_context_league_id
+        if session.source_league_id is not None:
+            return False, "standalone session cannot have a source league"
+        if context_league_id is None:
+            return True, None
+    effective_league_id = settings.sleeper_league_id or settings.active_league_id
+    if effective_league_id is not None and effective_league_id != context_league_id:
+        return (
+            False,
+            "active session configuration league does not match the effective selected league",
+        )
+    return True, None
+
+
 def _file_values(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -190,7 +214,16 @@ def load_settings(**cli_values: Any) -> Settings:
                 context.season if isinstance(context, LeagueContext) else context["season"]
             )
     merged["sleeper_league_id"] = selected
-    return Settings(**merged)
+    settings = Settings(**merged)
+    compatible, _ = active_session_compatibility(settings)
+    if not compatible:
+        settings = settings.model_copy(
+            update={
+                "active_draft_session": None,
+                "active_draft_session_invalidated": True,
+            }
+        )
+    return settings
 
 
 def save_settings(settings: Settings) -> Path:

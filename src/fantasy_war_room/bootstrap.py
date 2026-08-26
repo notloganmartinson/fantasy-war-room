@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import duckdb
 
-from fantasy_war_room.config import Settings
+from fantasy_war_room.config import Settings, active_session_compatibility
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError
 from fantasy_war_room.models import Snapshot
@@ -174,6 +174,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         )
 
     context = settings.draft_configuration_context
+    session_compatible, session_compatibility_error = active_session_compatibility(settings)
+    session_invalid = settings.active_draft_session_invalidated or not session_compatible
     configured = bool(settings.sleeper_username and settings.sleeper_user_id)
     check(
         "user_configuration",
@@ -195,10 +197,11 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     check(
         "active_draft_session",
         True,
-        "fail" if settings.active_draft_session_invalidated else "pass",
+        "fail" if session_invalid else "pass",
         (
-            "League selection changed; establish its active draft session"
-            if settings.active_draft_session_invalidated
+            session_compatibility_error
+            or "League selection changed; establish its active draft session"
+            if session_invalid
             else (
                 "Active draft session selected"
                 if settings.active_draft_session is not None
@@ -206,7 +209,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             )
         ),
     )
-    if settings.active_draft_session_invalidated:
+    if session_invalid:
         return _readiness_result(
             settings,
             checks,
@@ -665,6 +668,13 @@ def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[
 
 
 def resolve_mcp_launch_spec(settings: Settings, *, repository_root: Path) -> ResolvedMcpLaunchSpec:
+    session_compatible, reason = active_session_compatibility(settings)
+    if not session_compatible:
+        raise ConfigurationError(
+            "active_draft_session_incompatible",
+            "Active draft session is incompatible with the effective league selection",
+            {"reason": reason},
+        )
     effective = resolve_effective_draft_configuration(settings)
     state = readiness(settings, repository_root=repository_root)
     failures = [item for item in state["checks"] if item["required"] and item["status"] != "pass"]

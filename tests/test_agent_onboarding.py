@@ -18,6 +18,7 @@ from fantasy_war_room.config import (
     DraftContextType,
     LeagueContext,
     Settings,
+    config_file_path,
     load_settings,
     save_settings,
 )
@@ -442,6 +443,228 @@ def test_advanced_mode_with_compatible_inputs_is_ready(monkeypatch: Any, tmp_pat
 def test_onboarding_state_boundary_rejects_actionless_needs_action() -> None:
     with pytest.raises(RuntimeError, match="at least one next action"):
         _validated_agent_state({"state": "needs_action", "question": None, "next_actions": []})
+
+
+@pytest.mark.parametrize(
+    ("session", "selected_league", "preserved"),
+    [
+        (
+            ActiveDraftSession(
+                draft_id="draft-a",
+                context_type="league",
+                season="2026",
+                source_league_id="a",
+                scoring_context_league_id="a",
+            ),
+            "a",
+            True,
+        ),
+        (
+            ActiveDraftSession(
+                draft_id="draft-a",
+                context_type="league",
+                season="2026",
+                source_league_id="a",
+                scoring_context_league_id="a",
+            ),
+            "b",
+            False,
+        ),
+        (
+            ActiveDraftSession(
+                draft_id="mock-m",
+                context_type="standalone",
+                season="2026",
+                scoring_context_league_id="a",
+            ),
+            "a",
+            True,
+        ),
+        (
+            ActiveDraftSession(
+                draft_id="mock-m",
+                context_type="standalone",
+                season="2026",
+                scoring_context_league_id="a",
+            ),
+            "b",
+            False,
+        ),
+    ],
+)
+def test_environment_league_precedence_preserves_only_compatible_session(
+    xdg: Path,
+    monkeypatch: Any,
+    session: ActiveDraftSession,
+    selected_league: str,
+    preserved: bool,
+) -> None:
+    save_settings(
+        Settings(
+            sleeper_username="alice",
+            sleeper_user_id="u1",
+            active_league_id="a",
+            sleeper_league_id="a",
+            league_contexts={
+                "a": LeagueContext(league_id="a", season="2026"),
+                "b": LeagueContext(league_id="b", season="2026"),
+            },
+            active_draft_session=session,
+        )
+    )
+    persisted_before = config_file_path().read_text(encoding="utf-8")
+    monkeypatch.setenv("FWR_SLEEPER_LEAGUE_ID", selected_league)
+
+    effective = load_settings()
+
+    assert effective.active_league_id == selected_league
+    assert effective.active_draft_session == (session if preserved else None)
+    assert effective.active_draft_session_invalidated is (not preserved)
+    assert config_file_path().read_text(encoding="utf-8") == persisted_before
+
+
+def test_cli_league_precedence_invalidates_incompatible_session(xdg: Path) -> None:
+    session = ActiveDraftSession(
+        draft_id="draft-a",
+        context_type="league",
+        season="2026",
+        source_league_id="a",
+        scoring_context_league_id="a",
+    )
+    save_settings(
+        Settings(
+            active_league_id="a",
+            sleeper_league_id="a",
+            league_contexts={
+                "a": LeagueContext(league_id="a", season="2026"),
+                "b": LeagueContext(league_id="b", season="2026"),
+            },
+            active_draft_session=session,
+        )
+    )
+    effective = load_settings(sleeper_league_id="b")
+    assert effective.active_league_id == "b"
+    assert effective.active_draft_session is None
+    assert effective.active_draft_session_invalidated is True
+
+
+def test_environment_league_change_blocks_watch_mcp_and_requests_new_draft(
+    runner: CliRunner, xdg: Path, tmp_path: Path, monkeypatch: Any
+) -> None:
+    save_settings(
+        Settings(
+            sleeper_username="alice",
+            sleeper_user_id="u1",
+            active_league_id="a",
+            sleeper_league_id="a",
+            league_contexts={
+                "a": LeagueContext(league_id="a", season="2026"),
+                "b": LeagueContext(league_id="b", season="2026"),
+            },
+            active_draft_session=ActiveDraftSession(
+                draft_id="draft-a",
+                context_type="league",
+                season="2026",
+                source_league_id="a",
+                scoring_context_league_id="a",
+            ),
+        )
+    )
+    monkeypatch.setenv("FWR_SLEEPER_LEAGUE_ID", "b")
+    watched = runner.invoke(app, ["watch"])
+    assert watched.exit_code != 0
+    assert "invalidated" in watched.output
+    with pytest.raises(ConfigurationError):
+        resolve_mcp_launch_spec(load_settings(), repository_root=tmp_path)
+    onboard = _body(runner.invoke(app, ["onboard", "--json"]))
+    assert onboard["state"] == "needs_action"
+    assert onboard["next_actions"][0]["id"] == "sync_draft"
+
+
+def test_standalone_without_scoring_context_stably_precedes_intelligence_mode(
+    runner: CliRunner, xdg: Path
+) -> None:
+    save_settings(
+        Settings(
+            sleeper_username="alice",
+            sleeper_user_id="u1",
+            active_league_id="a",
+            sleeper_league_id="a",
+            league_contexts={"a": LeagueContext(league_id="a", season="2026")},
+            active_draft_session=ActiveDraftSession(
+                draft_id="mock-m",
+                context_type="standalone",
+                season="2026",
+            ),
+        )
+    )
+    first = _body(runner.invoke(app, ["onboard", "--json"]))
+    second = _body(runner.invoke(app, ["onboard", "--json"]))
+    assert first == second
+    assert first["state"] == "needs_input"
+    assert first["question"]["id"] == "scoring_context_league"
+    assert first["question"]["choices"][0]["id"] == "a"
+    assert first["question"]["id"] != "intelligence_mode"
+
+
+def test_standalone_with_scoring_context_quick_proceeds_to_portable_action(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    settings = Settings(
+        sleeper_username="alice",
+        sleeper_user_id="u1",
+        intelligence_mode="quick",
+        db_path=tmp_path / "quick.duckdb",
+        league_contexts={
+            "a": LeagueContext(
+                league_id="a", season="2026", recommendation_model="portable-market-1.0"
+            )
+        },
+        active_draft_session=ActiveDraftSession(
+            draft_id="mock-m",
+            context_type="standalone",
+            season="2026",
+            scoring_context_league_id="a",
+            draft_slot=1,
+        ),
+    )
+    monkeypatch.setattr(
+        "fantasy_war_room.cli.readiness",
+        lambda *_a, **_k: {
+            "ready": False,
+            "checks": [
+                {"name": "player_directory", "required": True, "status": "pass"},
+                {"name": "compatible_market_board", "required": True, "status": "fail"},
+                {"name": "codex_mcp_configuration", "required": False, "status": "missing"},
+            ],
+        },
+    )
+    result = _agent_status(settings)
+    assert result["state"] == "needs_action"
+    assert result["next_actions"][0]["id"] == "refresh_public_intelligence"
+
+
+def test_standalone_with_scoring_context_advanced_requests_custom_rankings(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    settings = _advanced_settings(tmp_path).model_copy(
+        update={
+            "active_draft_session": ActiveDraftSession(
+                draft_id="mock-m",
+                context_type="standalone",
+                season="2026",
+                scoring_context_league_id="l1",
+                draft_slot=1,
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "fantasy_war_room.cli.readiness",
+        lambda *_a, **_k: _readiness_result(ranking="fail", projection="fail", ready=False),
+    )
+    result = _agent_status(settings)
+    assert result["state"] == "needs_input"
+    assert result["question"]["id"] == "advanced_rankings"
 
 
 def test_claude_registration_uses_resolved_repository_cwd(
