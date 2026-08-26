@@ -1080,14 +1080,24 @@ def drafts_connect(
         draft_id = _draft_id_from_selector(draft_or_url)
         ensure_directories(settings)
         client = _client(settings)
+        discovered_contexts: list[dict[str, Any]] = []
         try:
             snapshot, created = sync_by_draft_id(
                 client, SnapshotRepository(settings.db_path), draft_id, scoring_context_league_id
             )
+            draft_season = str(snapshot.draft.get("season") or settings.season)
+            if (
+                snapshot.draft_context_type == "standalone"
+                and snapshot.scoring_context is None
+                and settings.sleeper_user_id is not None
+            ):
+                discovered_contexts = client.get_user_leagues(
+                    settings.sleeper_user_id, draft_season
+                )
         finally:
             client.close()
         slot = resolve_setup_draft_slot(snapshot, settings.sleeper_user_id)
-        season = str(snapshot.draft.get("season") or settings.season)
+        season = draft_season
         selected = with_active_draft_session(
             settings,
             draft_id=draft_id,
@@ -1099,11 +1109,24 @@ def drafts_connect(
         )
         save_settings(selected)
         if snapshot.draft_context_type == "standalone" and snapshot.scoring_context is None:
-            choices = [
-                {"id": item.league_id, "name": item.league_id, "season": item.season}
+            choices_by_id: dict[str, dict[str, Any]] = {
+                item.league_id: {
+                    "id": item.league_id,
+                    "name": item.league_id,
+                    "season": item.season,
+                }
                 for item in settings.league_contexts.values()
                 if item.season == season
-            ]
+            }
+            for league in discovered_contexts:
+                choice_id = str(league["league_id"])
+                choices_by_id[choice_id] = {
+                    "id": choice_id,
+                    "name": str(league.get("name") or choice_id),
+                    "teams": int(league.get("total_rosters") or 0),
+                    "season": str(league.get("season") or season),
+                }
+            choices = [choices_by_id[key] for key in sorted(choices_by_id)]
             return {
                 "schema_version": "1.0",
                 "state": "needs_input",
