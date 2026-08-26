@@ -1065,16 +1065,20 @@ def leagues_use(league_id: str, json_output: bool = typer.Option(False, "--json"
                 "League context is not saved; run fwr setup --league-id first",
                 {"league_id": league_id, "available_league_ids": sorted(settings.league_contexts)},
             )
-        selected = settings.model_copy(
-            update={
-                "active_league_id": league_id,
-                "sleeper_league_id": league_id,
-                "season": context.season,
-                "strategy": None,
-                "active_draft_session": None,
-                "active_draft_session_invalidated": True,
-            }
-        )
+        updates: dict[str, Any] = {
+            "active_league_id": league_id,
+            "sleeper_league_id": league_id,
+            "season": context.season,
+            "strategy": None,
+        }
+        if league_id != settings.active_league_id:
+            updates.update(
+                {
+                    "active_draft_session": None,
+                    "active_draft_session_invalidated": True,
+                }
+            )
+        selected = settings.model_copy(update=updates)
         save_settings(selected)
         return context_data(selected)
 

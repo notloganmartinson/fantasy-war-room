@@ -15,6 +15,7 @@ from fantasy_war_room.bootstrap import ResolvedMcpLaunchSpec, resolve_mcp_launch
 from fantasy_war_room.cli import _agent_status, _validated_agent_state, app
 from fantasy_war_room.config import (
     ActiveDraftSession,
+    DraftContextType,
     LeagueContext,
     Settings,
     load_settings,
@@ -288,6 +289,79 @@ def test_league_switch_invalidates_other_league_draft(runner: CliRunner, xdg: Pa
     )
     assert runner.invoke(app, ["leagues", "use", "b", "--json"]).exit_code == 0
     assert load_settings().active_draft_session is None
+
+
+@pytest.mark.parametrize(
+    ("draft_id", "context_type", "source_league_id", "draft_slot"),
+    [
+        ("draft-1", "league", "league-1", 1),
+        ("mock-1", "standalone", None, 2),
+    ],
+)
+def test_reselecting_active_league_preserves_exact_session_watch_and_mcp(
+    runner: CliRunner,
+    xdg: Path,
+    tmp_path: Path,
+    monkeypatch: Any,
+    draft_id: str,
+    context_type: DraftContextType,
+    source_league_id: str | None,
+    draft_slot: int,
+) -> None:
+    from test_recommend_integration import _fixture
+
+    repository = _fixture(tmp_path)
+    session = ActiveDraftSession(
+        draft_id=draft_id,
+        context_type=context_type,
+        season="2026",
+        source_league_id=source_league_id,
+        scoring_context_league_id="league-1",
+        draft_slot=draft_slot,
+    )
+    save_settings(
+        Settings(
+            sleeper_username="alice",
+            sleeper_user_id="user-1",
+            active_league_id="league-1",
+            sleeper_league_id="league-1",
+            db_path=repository.path,
+            league_contexts={
+                "league-1": LeagueContext(
+                    league_id="league-1",
+                    season="2026",
+                    ranking_source="rotoworld",
+                    recommendation_model="baseline-1.0",
+                )
+            },
+            active_draft_session=session,
+        )
+    )
+    watched: dict[str, Any] = {}
+
+    def fake_watch(*args: Any, **kwargs: Any) -> None:
+        watched.update(draft_id=args[2], scoring_context_league_id=args[4])
+
+    monkeypatch.setattr("fantasy_war_room.cli.watch_by_draft_id", fake_watch)
+    first = runner.invoke(app, ["leagues", "use", "league-1", "--json"])
+    assert first.exit_code == 0, first.stdout
+    after_first = load_settings()
+    assert after_first.active_draft_session == session
+    assert after_first.active_draft_session_invalidated is False
+    assert runner.invoke(app, ["watch"]).exit_code == 0
+    assert watched == {
+        "draft_id": draft_id,
+        "scoring_context_league_id": "league-1",
+    }
+    spec = resolve_mcp_launch_spec(after_first, repository_root=tmp_path / "project")
+    assert spec.draft_id == draft_id
+
+    second = runner.invoke(app, ["leagues", "use", "league-1", "--json"])
+    assert second.exit_code == 0, second.stdout
+    after_second = load_settings()
+    assert after_second.active_draft_session == session
+    assert after_second.active_draft_session_invalidated is False
+    assert after_second.model_dump() == after_first.model_dump()
 
 
 def _advanced_settings(tmp_path: Path) -> Settings:
