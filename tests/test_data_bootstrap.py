@@ -18,6 +18,7 @@ from fantasy_war_room.external_sources import (
     PortableSourceClient,
     acquire_ffc_adp,
     acquire_nflverse_byes,
+    classify_ffc_market_compatibility,
     classify_ffc_scoring,
     scoring_to_ffc,
 )
@@ -74,17 +75,37 @@ def test_ffc_rejects_custom_scoring() -> None:
     assert raised.value.code == "unsupported_adp_scoring_format"
 
 
+def test_ffc_exact_market_assumptions_are_reported() -> None:
+    compatibility = classify_ffc_market_compatibility(
+        {"rec": 1.0, "pass_int": -2.0, "pass_td": 4.0}
+    )
+
+    assert compatibility.scoring_format == "full_ppr"
+    assert compatibility.compatibility == "exact_market_assumptions"
+    assert compatibility.source_assumption_differences == {}
+
+
 @pytest.mark.parametrize(
-    "settings",
+    ("settings", "expected_format", "key"),
     [
-        {"rec": 1.0, "bonus_rec_te": 0.5},
-        {"rec": 0.5, "pass_td": 6.0},
-        {"rec": 0.0, "rush_fd": 0.5},
+        ({"rec": 1.0, "pass_int": -1.0}, "full_ppr", "pass_int"),
+        ({"rec": 0.5, "pass_td": 6.0}, "half_ppr", "pass_td"),
     ],
 )
-def test_ffc_rejects_non_generic_offensive_scoring(settings: dict[str, float]) -> None:
+def test_ffc_secondary_scoring_differences_remain_market_compatible(
+    settings: dict[str, float], expected_format: str, key: str
+) -> None:
+    compatibility = classify_ffc_market_compatibility(settings)
+
+    assert classify_ffc_scoring(settings) == expected_format
+    assert compatibility.compatibility == "market_format_compatible_with_differences"
+    assert compatibility.source_assumption_differences[key]["league"] == settings[key]
+    assert compatibility.as_dict()["exact_scoring_compatible"] is False
+
+
+def test_ffc_rejects_unsupported_reception_bucket() -> None:
     with pytest.raises(InputError) as raised:
-        classify_ffc_scoring(settings)
+        classify_ffc_scoring({"rec": 0.75})
     assert raised.value.code == "unsupported_adp_scoring_format"
 
 
@@ -404,7 +425,7 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
         user_id="user-1",
         league_ids=["league-1"],
         with_sync=True,
-        scoring_settings=SCORING,
+        scoring_settings={**SCORING, "pass_int": -1},
         roster_positions=ROSTER,
         team_count=12,
         draft_slot_value=1,
@@ -429,17 +450,40 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
         ],
     )
     acquired = runner.invoke(cli.app, ["data", "refresh", "--json"])
+    status = runner.invoke(cli.app, ["data", "status", "--json"])
     ready = runner.invoke(cli.app, ["draft-ready", "--json"])
     configured = runner.invoke(cli.app, ["codex", "configure", "--json"])
+    onboard = runner.invoke(cli.app, ["onboard", "--mode", "quick", "--json"])
 
-    assert setup.exit_code == acquired.exit_code == ready.exit_code == configured.exit_code == 0
+    assert (
+        setup.exit_code
+        == acquired.exit_code
+        == status.exit_code
+        == ready.exit_code
+        == configured.exit_code
+        == onboard.exit_code
+        == 0
+    )
     acquired_data = parse_output(acquired)["data"]
     assert acquired_data["sources"]["adp"]["provider"] == "fantasy-football-calculator"
     assert acquired_data["sources"]["adp"]["market_board"]["status"] == "derived"
+    compatibility = acquired_data["sources"]["adp"]["market_compatibility"]
+    assert compatibility["compatibility"] == "market_format_compatible_with_differences"
+    assert compatibility["source_assumption_differences"]["pass_int"] == {
+        "league": -1.0,
+        "ffc_assumption": -2.0,
+    }
+    assert acquired_data["sources"]["adp"]["limitations"]
+    status_compatibility = parse_output(status)["data"]["sources"]["ffc_adp"][
+        "market_compatibility"
+    ]
+    assert status_compatibility == compatibility
     assert acquired_data["sources"]["team_schedule"]["provider"] == "nflverse"
     ready_data = parse_output(ready)["data"]
     assert ready_data["ready"] is True
     assert ready_data["recommendation_model"] == "portable-market-1.0"
+    adp_check = next(check for check in ready_data["checks"] if check["name"] == "compatible_adp")
+    assert adp_check["details"]["market_compatibility"] == compatibility
     assert (
         next(check for check in ready_data["checks"] if check["name"] == "compatible_adp")["status"]
         == "pass"
@@ -456,3 +500,4 @@ def test_clean_clone_cli_flow_bootstraps_data_and_generates_codex_config(
     assert args[args.index("--draft-id") + 1] == "draft-league-1"
     assert args[args.index("--draft-slot") + 1] == "1"
     assert args[args.index("--model") + 1] == "portable-market-1.0"
+    assert parse_output(onboard)["data"]["state"] == "ready"

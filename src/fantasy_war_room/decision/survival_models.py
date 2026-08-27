@@ -64,8 +64,8 @@ class PassNowInterval(SurvivalModel):
 
 
 class SurvivalAdpSnapshotInput(SurvivalModel):
-    schema_version: Literal["fwr.survival-adp-snapshot-input/1.0"] = (
-        "fwr.survival-adp-snapshot-input/1.0"
+    schema_version: Literal["fwr.survival-adp-snapshot-input/1.1"] = (
+        "fwr.survival-adp-snapshot-input/1.1"
     )
     adp_snapshot_id: str
     source: str
@@ -79,6 +79,10 @@ class SurvivalAdpSnapshotInput(SurvivalModel):
     league_size: int = Field(gt=0)
     scoring_format: str
     draft_type: Literal["snake"] = "snake"
+    market_assumption_compatibility: Literal[
+        "exact_market_assumptions", "market_format_compatible_with_differences"
+    ] = "exact_market_assumptions"
+    source_assumption_differences: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class SurvivalPlayerInput(SurvivalModel):

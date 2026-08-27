@@ -19,6 +19,7 @@ from fantasy_war_room.decision.models import (
 )
 from fantasy_war_room.decision.survival_models import NextPickSurvivalInputs, SurvivalModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError, NotFoundError
+from fantasy_war_room.external_sources import classify_ffc_market_compatibility
 from fantasy_war_room.models import (
     AdpSnapshot,
     MarketBoardSnapshot,
@@ -559,6 +560,7 @@ def _portable_inputs_from_connection(
     team_count, rounds, draft_type = _recommendation_draft_settings(draft_snapshot)
     league_type, keeper_status = _recommendation_league_format(scoring_context)
     scoring_format = _recommendation_scoring_format(normalized_scoring)
+    market_compatibility = classify_ffc_market_compatibility(normalized_scoring)
     market_scoring = {
         "full_ppr": "ppr",
         "half_ppr": "half_ppr",
@@ -567,7 +569,7 @@ def _portable_inputs_from_connection(
     if market_scoring is None:
         raise InputError(
             "unsupported_adp_scoring_format",
-            "Portable market recommendations require an exact FFC-compatible scoring format",
+            "Portable market recommendations require an FFC-supported reception scoring bucket",
             {"scoring_format": scoring_format},
         )
     player_row = connection.execute(
@@ -592,7 +594,7 @@ def _portable_inputs_from_connection(
     ).fetchone()
     if board_row is None:
         raise NotFoundError(
-            "No exact compatible portable market board exists as of the decision time",
+            "No market-format-compatible portable board exists as of the decision time",
             {"season": season, "league_size": team_count, "scoring_format": market_scoring},
             code="missing_compatible_market_board",
         )
@@ -673,5 +675,7 @@ def _portable_inputs_from_connection(
             market_board_unresolved_row_count=board.unresolved_row_count,
             market_board_ambiguous_row_count=board.ambiguous_row_count,
             scoring_context_league_id=draft_snapshot.scoring_context_league_id,
+            market_assumption_compatibility=market_compatibility.compatibility,
+            source_assumption_differences=market_compatibility.source_assumption_differences,
         ),
     ), draft_snapshot

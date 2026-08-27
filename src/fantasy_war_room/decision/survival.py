@@ -396,6 +396,11 @@ def simulate_next_pick_survival(inputs: NextPickSurvivalInputs) -> NextPickSurvi
             "The current user selection is conditioned only as not this candidate; the "
             "unspecified alternative player is not removed from the modeled pool."
         )
+    if inputs.adp.source_assumption_differences:
+        limitations.append(
+            "ADP source scoring assumptions differ from this league; survival uses unadjusted "
+            "market data and is not exact-scoring compatible."
+        )
     return NextPickSurvivalResult(
         model_version=inputs.model_specification.model_version,
         decision_at=inputs.decision_at,

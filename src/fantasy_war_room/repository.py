@@ -46,6 +46,7 @@ from fantasy_war_room.errors import (
     InputError,
     NotFoundError,
 )
+from fantasy_war_room.external_sources import classify_ffc_market_compatibility
 from fantasy_war_room.identity import (
     alias_targets,
     normalize_name,
@@ -1923,7 +1924,7 @@ class IntelligenceRepository(SnapshotRepository):
         sleeper_user_id: str | None,
         draft_slot: int | None,
     ) -> PortableMarketRecommendationInputs:
-        """Build projection-free inputs from one exact compatible derived FFC market board."""
+        """Build projection-free inputs from one market-format-compatible FFC market board."""
         self.initialize()
         with duckdb.connect(str(self.path)) as connection:
             draft_row = _select_recommendation_draft(connection, at, draft_id, league_id)
@@ -1954,6 +1955,7 @@ class IntelligenceRepository(SnapshotRepository):
             team_count, rounds, draft_type = _recommendation_draft_settings(snapshot)
             league_type, keeper_status = _recommendation_league_format(scoring_context)
             scoring_format = _recommendation_scoring_format(normalized_scoring)
+            market_compatibility = classify_ffc_market_compatibility(normalized_scoring)
             market_scoring = {
                 "full_ppr": "ppr",
                 "half_ppr": "half_ppr",
@@ -1989,7 +1991,7 @@ class IntelligenceRepository(SnapshotRepository):
             ).fetchone()
             if board_row is None:
                 raise NotFoundError(
-                    "No exact compatible portable market board exists as of the decision time",
+                    "No market-format-compatible portable board exists as of the decision time",
                     {
                         "as_of": at.isoformat(),
                         "season": season,
@@ -2082,6 +2084,8 @@ class IntelligenceRepository(SnapshotRepository):
                 market_board_unresolved_row_count=board.unresolved_row_count,
                 market_board_ambiguous_row_count=board.ambiguous_row_count,
                 scoring_context_league_id=snapshot.scoring_context_league_id,
+                market_assumption_compatibility=market_compatibility.compatibility,
+                source_assumption_differences=(market_compatibility.source_assumption_differences),
             ),
         )
 
@@ -2358,6 +2362,7 @@ def _survival_inputs_from_connection(
     )
     interval = derive_pass_now_interval(turn, team_count=team_count, round_count=rounds)
     scoring_format = _recommendation_scoring_format(normalized_scoring)
+    market_compatibility = classify_ffc_market_compatibility(normalized_scoring)
     adp_scoring_format = {
         "full_ppr": "ppr",
         "half_ppr": "half_ppr",
@@ -2383,7 +2388,7 @@ def _survival_inputs_from_connection(
     adp_row = connection.execute(adp_query, adp_params).fetchone()
     if adp_row is None:
         raise NotFoundError(
-            "No exact-compatible ADP snapshot exists as of the decision time",
+            "No market-format-compatible ADP snapshot exists as of the decision time",
             {
                 "as_of": at.isoformat(),
                 "season": season,
@@ -2446,6 +2451,8 @@ def _survival_inputs_from_connection(
             season=adp_snapshot.season,
             league_size=adp_snapshot.league_size,
             scoring_format=adp_snapshot.scoring_format,
+            market_assumption_compatibility=market_compatibility.compatibility,
+            source_assumption_differences=market_compatibility.source_assumption_differences,
         ),
         available_players=available_players,
         candidates=tuple(

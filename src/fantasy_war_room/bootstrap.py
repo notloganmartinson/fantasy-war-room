@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import tomllib
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ import duckdb
 from fantasy_war_room.config import Settings, active_session_compatibility
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError
+from fantasy_war_room.external_sources import classify_ffc_market_compatibility
 from fantasy_war_room.models import Snapshot
 from fantasy_war_room.repository import (
     IntelligenceRepository,
@@ -302,6 +304,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         scoring_format: str | None = None
         team_count: int | None = None
         scoring_hash: str | None = None
+        ffc_market_compatibility: dict[str, Any] | None = None
         try:
             team_count, _, draft_type = _recommendation_draft_settings(snapshot)
             league_type, keeper_status = _recommendation_league_format(
@@ -321,6 +324,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
                 )
             normalized = {str(key): float(value) for key, value in scoring.items()}
             scoring_format = _recommendation_scoring_format(normalized)
+            with suppress(InputError):
+                ffc_market_compatibility = classify_ffc_market_compatibility(normalized).as_dict()
             scoring_hash = _canonical_hash(normalized)
             if draft_type != "snake" or league_type != "redraft" or keeper_status != "non_keeper":
                 raise InputError(
@@ -442,10 +447,10 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             "compatible_adp",
             portable_model,
             "pass" if adp else "missing",
-            "Compatible ADP is available"
+            "Market-format-compatible ADP is available"
             if adp
             else (
-                "Run fwr data refresh to acquire exact compatible FFC ADP"
+                "Run fwr data refresh to acquire market-format-compatible FFC ADP"
                 if portable_model
                 else "Optional: import compatible ADP for market context"
             ),
@@ -453,6 +458,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             source=str(adp[1]) if adp else None,
             acquisition="automatic",
             command="fwr data bootstrap",
+            market_compatibility=ffc_market_compatibility,
         )
         market_board = None
         if scoring_key and team_count is not None:
@@ -469,10 +475,10 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             "compatible_market_board",
             portable_model,
             "pass" if market_board else ("fail" if portable_model else "missing"),
-            "Exact compatible FFC portable market board is available"
+            "Market-format-compatible FFC portable market board is available"
             if market_board
             else (
-                "Run fwr data refresh to derive an exact compatible FFC market board"
+                "Run fwr data refresh to derive a market-format-compatible FFC market board"
                 if portable_model
                 else "Portable market board is not required by the configured model"
             ),
@@ -481,6 +487,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             transformation_version=str(market_board[2]) if market_board else None,
             acquisition="automatic",
             command="fwr data refresh",
+            market_compatibility=ffc_market_compatibility,
         )
         schedule = connection.execute(
             "SELECT schedule_snapshot_id, source FROM team_schedule_snapshots "

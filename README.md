@@ -112,15 +112,16 @@ is safe to rerun.
 
 Sleeper connectivity and intelligence readiness are separate. `data refresh` derives the
 active league's season, team count, scoring format, and draft type from synchronized Sleeper
-observations. It automatically acquires exact-format ADP from Fantasy Football Calculator and
+observations. It automatically acquires market-format ADP from Fantasy Football Calculator and
 derives both an immutable portable market board and NFL bye weeks from the nflverse schedule
 dataset. New league contexts select `portable-market-1.0`, so `draft-ready` can report `READY`
-without ranking or projection files. The portable result follows compatible FFC market order; it
-does not fabricate projected points or claim to be an expert-consensus board.
+without ranking or projection files. The portable result follows compatible FFC market order. FWR
+reports any secondary scoring differences from FFC's source assumptions and does not adjust ADP
+for them, fabricate projected points, or claim exact scoring compatibility.
 
 ### Intelligence modes
 
-- **Free portable mode:** Sleeper state and player identity, exact-format FFC ADP and its derived
+- **Free portable mode:** Sleeper state and player identity, market-format-compatible FFC ADP and its derived
   market board, nflverse schedule/byes, market-based recommendations, and survival simulation.
   No paid data is required.
 - **Enhanced mode:** compatible external or user-supplied rankings and league-scored projections
@@ -234,10 +235,12 @@ uv run fwr rankings import rankings.csv \
 Rows resolve by explicit provider ID or exact normalized identity. Ambiguous and unresolved rows
 are preserved for inspection with `fwr rankings unresolved`; fuzzy matches are never accepted.
 
-`portable-market-1.0` requires an exact compatible FFC ADP snapshot and its deterministically
+`portable-market-1.0` requires a market-format-compatible FFC ADP snapshot and its deterministically
 derived market board, but no projection snapshot. It orders currently available players by that
 market board and exposes roster/position context separately. It intentionally provides no
 projected points, replacement projection, VORP, projection scarcity, or starter projection delta.
+FFC supports standard, half-PPR, and PPR market buckets; secondary scoring differences are exposed
+as source-assumption limitations rather than represented as adjusted ADP.
 Survival remains a separate seeded wait-cost lane and never changes this deterministic ordering.
 
 `baseline-1.0`, `trusted-board-1.0`, and `trusted-board-1.1` retain their compatible ranking and

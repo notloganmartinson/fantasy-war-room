@@ -338,6 +338,28 @@ def test_result_counts_and_rates_are_bounded() -> None:
     assert 0 <= row.simulated_availability_rate <= 1
 
 
+def test_survival_inherits_market_source_assumption_limitation() -> None:
+    inputs = _inputs(simulations=50)
+    inputs = inputs.model_copy(
+        update={
+            "adp": inputs.adp.model_copy(
+                update={
+                    "market_assumption_compatibility": (
+                        "market_format_compatible_with_differences"
+                    ),
+                    "source_assumption_differences": {
+                        "pass_int": {"league": -1.0, "ffc_assumption": -2.0}
+                    },
+                }
+            )
+        }
+    )
+
+    result = simulate_next_pick_survival(inputs)
+
+    assert "unadjusted market data" in " ".join(result.limitations)
+
+
 def _turn(
     *, next_pick: int, slot: int, on_clock: bool, next_user: int, following: int | None
 ) -> DraftTurnContext:

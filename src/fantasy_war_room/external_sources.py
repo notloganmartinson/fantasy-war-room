@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import httpx
 import polars as pl
@@ -101,6 +101,22 @@ class NormalizedSourceData:
     from_cache: bool
 
 
+@dataclass(frozen=True)
+class FfcMarketCompatibility:
+    scoring_format: Literal["full_ppr", "half_ppr", "standard"]
+    compatibility: Literal["exact_market_assumptions", "market_format_compatible_with_differences"]
+    source_assumption_differences: dict[str, dict[str, float]]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "scoring_format": self.scoring_format,
+            "compatibility": self.compatibility,
+            "source_assumption_differences": self.source_assumption_differences,
+            "exact_scoring_compatible": not self.source_assumption_differences,
+        }
+
+
 class PortableIntelligenceProvider(Protocol):
     def acquire_adp(
         self,
@@ -130,30 +146,41 @@ def scoring_to_ffc(scoring_format: str) -> str:
 
 
 def classify_ffc_scoring(scoring: dict[str, float]) -> str:
-    """Return an FWR generic scoring class only for an exact FFC-compatible offense."""
-    conflicts = {
-        key: {"configured": scoring[key], "required": expected}
+    """Return the supported FFC market bucket; secondary differences remain explicit."""
+    return classify_ffc_market_compatibility(scoring).scoring_format
+
+
+def classify_ffc_market_compatibility(scoring: dict[str, float]) -> FfcMarketCompatibility:
+    """Classify FFC endpoint compatibility without claiming exact league scoring."""
+    receptions = scoring.get("rec", 0.0)
+    formats: dict[float, Literal["full_ppr", "half_ppr", "standard"]] = {
+        1.0: "full_ppr",
+        0.5: "half_ppr",
+        0.0: "standard",
+    }
+    if receptions not in formats:
+        raise InputError(
+            "unsupported_adp_scoring_format",
+            "Fantasy Football Calculator has no market endpoint for this reception scoring",
+            {"receptions": receptions, "supported_receptions": sorted(formats)},
+        )
+    differences = {
+        key: {"league": float(scoring[key]), "ffc_assumption": expected}
         for key, expected in FFC_OFFENSIVE_DEFAULTS.items()
         if key in scoring and scoring[key] != expected
     }
-    unsupported = sorted(
-        key
-        for key, value in scoring.items()
-        if value != 0 and (key.startswith("bonus_") or key in FFC_UNSUPPORTED_OFFENSIVE_KEYS)
+    for key, value in scoring.items():
+        if value != 0 and (key.startswith("bonus_") or key in FFC_UNSUPPORTED_OFFENSIVE_KEYS):
+            differences[key] = {"league": float(value), "ffc_assumption": 0.0}
+    return FfcMarketCompatibility(
+        scoring_format=formats[receptions],
+        compatibility=(
+            "market_format_compatible_with_differences"
+            if differences
+            else "exact_market_assumptions"
+        ),
+        source_assumption_differences=dict(sorted(differences.items())),
     )
-    receptions = scoring.get("rec", 0.0)
-    formats = {1.0: "full_ppr", 0.5: "half_ppr", 0.0: "standard"}
-    if conflicts or unsupported or receptions not in formats:
-        raise InputError(
-            "unsupported_adp_scoring_format",
-            "Fantasy Football Calculator has no exact mapping for this league's scoring settings",
-            {
-                "receptions": receptions,
-                "conflicts": conflicts,
-                "unsupported_scoring_keys": unsupported,
-            },
-        )
-    return formats[receptions]
 
 
 class PortableSourceClient:

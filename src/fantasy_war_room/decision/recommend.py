@@ -66,7 +66,7 @@ TRUSTED_BOARD_1_1_POLICY = RecommendationPolicy(
 def recommend_portable_market(
     inputs: PortableMarketRecommendationInputs,
 ) -> PortableMarketRecommendationResult:
-    """Follow exact compatible FFC market order without manufacturing projection value."""
+    """Follow compatible FFC market order without manufacturing projection value."""
     if inputs.draft_type.casefold() != "snake":
         raise InputError(
             "unsupported_draft_format",
@@ -130,12 +130,20 @@ def recommend_portable_market(
             "ambiguous_market_identity": inputs.provenance.market_board_ambiguous_row_count,
         },
         limitations=(
-            "Portable recommendation is a compatible FFC market-order baseline, not a "
-            "projection-backed player valuation.",
+            "Portable recommendation is a compatible FFC market-order baseline for this market "
+            "format, not a projection-backed player valuation.",
             "Projected points, VORP, replacement projections, scarcity projections, and "
             "starter projection effects are intentionally unavailable.",
             "Next-pick survival is separate wait-cost evidence and is not included in this "
             "deterministic ordering.",
+            *(
+                (
+                    "FFC source scoring assumptions differ from this league; market ADP is "
+                    "used without adjustment and is not exact-scoring compatible.",
+                )
+                if inputs.provenance.source_assumption_differences
+                else ()
+            ),
         ),
     )
 

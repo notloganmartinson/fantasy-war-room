@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +119,16 @@ def test_market_board_is_deterministic_idempotent_and_preserves_issues(tmp_path:
 def test_portable_model_is_ready_and_recommends_without_projections(tmp_path: Path) -> None:
     repository, _, _ = _portable_fixture(tmp_path)
     with duckdb.connect(str(repository.path)) as connection:
+        snapshot_id, raw_context = connection.execute(
+            "SELECT snapshot_id, scoring_context_payload FROM draft_snapshots "
+            "ORDER BY observed_at DESC LIMIT 1"
+        ).fetchone()
+        scoring_context = json.loads(raw_context)
+        scoring_context["scoring_settings"]["pass_int"] = -1
+        connection.execute(
+            "UPDATE draft_snapshots SET scoring_context_payload=? WHERE snapshot_id=?",
+            [json.dumps(scoring_context), snapshot_id],
+        )
         connection.execute("DELETE FROM projection_entries")
         connection.execute("DELETE FROM projection_snapshots")
         connection.execute("DELETE FROM ranking_entries")
@@ -189,7 +200,15 @@ def test_portable_model_is_ready_and_recommends_without_projections(tmp_path: Pa
         "starter_projection_delta",
     }.isdisjoint(response["candidates"][0])
     assert response["provenance"]["market_board_source"] == MARKET_BOARD_SOURCE
+    assert response["provenance"]["market_assumption_compatibility"] == (
+        "market_format_compatible_with_differences"
+    )
+    assert response["provenance"]["source_assumption_differences"]["pass_int"] == {
+        "league": -1.0,
+        "ffc_assumption": -2.0,
+    }
     assert "market-order baseline" in " ".join(response["limitations"])
+    assert "not exact-scoring compatible" in " ".join(response["limitations"])
 
     portable_result, snapshot, inputs = service._portable_context(decision_at.isoformat())
     empty_result = portable_result.model_copy(update={"candidates": []})

@@ -119,7 +119,7 @@ class PortableMarketPlayerInput(DecisionModel):
 
 
 class PortableMarketProvenance(DecisionModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     draft_snapshot_id: str
     draft_observed_at: datetime
     player_snapshot_id: str
@@ -141,6 +141,10 @@ class PortableMarketProvenance(DecisionModel):
     market_board_unresolved_row_count: int
     market_board_ambiguous_row_count: int
     scoring_context_league_id: str
+    market_assumption_compatibility: Literal[
+        "exact_market_assumptions", "market_format_compatible_with_differences"
+    ] = "exact_market_assumptions"
+    source_assumption_differences: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class PortableMarketRecommendationInputs(DecisionModel):

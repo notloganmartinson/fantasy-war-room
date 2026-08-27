@@ -414,8 +414,9 @@ Supported models are `portable-market-1.0`, `baseline-1.0`, `trusted-board-1.0`,
 bounded to 1..100.
 
 Returns schema `fwr.mcp.recommendation/1.0` containing a complete versioned result after
-presentation limiting. Portable candidates follow exact compatible FFC market order and return
-`projection_backed=false` plus board provenance and limitations. Projection-backed candidate data
+presentation limiting. Portable candidates follow market-format-compatible FFC market order and
+return `projection_backed=false` plus board provenance and any source-assumption limitations.
+Projection-backed candidate data
 includes projection completeness, VORP, scarcity, roster effect, trusted rank/tier values and
 components when supplied, weights, limitations, baselines, and provenance.
 

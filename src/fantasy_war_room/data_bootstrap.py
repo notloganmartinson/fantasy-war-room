@@ -16,6 +16,7 @@ from fantasy_war_room.external_sources import (
     NFLVERSE_SOURCE,
     PortableIntelligenceProvider,
     PublicIntelligenceAdapter,
+    classify_ffc_market_compatibility,
     classify_ffc_scoring,
 )
 from fantasy_war_room.market_board import derive_market_board
@@ -177,7 +178,9 @@ def data_status(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     context = active_intelligence_context(settings, repository)
     now = datetime.now(UTC)
     scoring = None
+    ffc_compatibility = None
     with suppress(InputError, KeyError):
+        ffc_compatibility = classify_ffc_market_compatibility(context.scoring_settings)
         scoring = {
             "full_ppr": "ppr",
             "half_ppr": "half_ppr",
@@ -277,7 +280,12 @@ def data_status(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         },
         "sources": {
             "player_directory": player_status,
-            "ffc_adp": source_status(adp, FFC_SOURCE),
+            "ffc_adp": {
+                **source_status(adp, FFC_SOURCE),
+                "market_compatibility": (
+                    ffc_compatibility.as_dict() if ffc_compatibility is not None else None
+                ),
+            },
             "portable_market_board": source_status(
                 board, "fantasy-football-calculator-market-board"
             ),
@@ -318,7 +326,8 @@ def _bootstrap_adp(
     force: bool,
 ) -> dict[str, Any]:
     try:
-        adp_scoring_format = classify_ffc_scoring(context.scoring_settings)
+        compatibility = classify_ffc_market_compatibility(context.scoring_settings)
+        adp_scoring_format = compatibility.scoring_format
         data = provider.acquire_adp(
             season=context.season,
             league_size=context.league_size,
@@ -356,6 +365,15 @@ def _bootstrap_adp(
             "matched": snapshot.matched_row_count,
             "unresolved": snapshot.unresolved_row_count,
             "ambiguous": snapshot.ambiguous_row_count,
+            "market_compatibility": compatibility.as_dict(),
+            "limitations": (
+                [
+                    "FFC ADP is usable for the league's market format but reflects different "
+                    "source scoring assumptions; ADP is not adjusted for those differences."
+                ]
+                if compatibility.source_assumption_differences
+                else []
+            ),
             "market_board": {
                 "status": "derived" if board_created else "unchanged",
                 "source": board.source,
