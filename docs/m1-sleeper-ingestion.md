@@ -1,5 +1,9 @@
 # M1: Sleeper ingestion and as-of draft snapshots
 
+> **Historical milestone document:** This document is preserved to show the project's engineering
+> evolution and may describe an earlier implementation stage. See [README.md](../README.md) for
+> current behavior.
+
 ## Goal
 
 Build a working CLI that discovers a user's Sleeper leagues, downloads a

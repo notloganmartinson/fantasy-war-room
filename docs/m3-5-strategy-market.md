@@ -1,5 +1,9 @@
 # M3.5: Strategy Profiles and Market Context
 
+> **Historical milestone document:** This document is preserved to show the project's engineering
+> evolution and may describe an earlier implementation stage. See [README.md](../README.md) for
+> current behavior.
+
 ## Status
 
 M3.5A and M3.5B Part 1 are implemented. M4C later added named-model simulated availability

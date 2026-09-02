@@ -42,7 +42,7 @@ FWR owns the facts and calculations. The AI client interprets and explains them.
 
 ## Demo
 
-**Video/GIF:** coming soon — add the public demo URL here.
+A live demo is available from the Fantasy War Room project on my LinkedIn profile.
 
 The recording script and reproducible setup are in the
 [60–90 second demo runbook](docs/demo-runbook.md).
