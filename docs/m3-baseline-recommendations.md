@@ -1,9 +1,14 @@
 # M3: Deterministic Baseline Draft Recommendations
 
+> **Historical milestone document:** This document is preserved to show the project's engineering
+> evolution and may describe an earlier implementation stage. See [README.md](../README.md) for
+> current behavior.
+
 ## Status
 
-Approved design. Phase A standalone draft ingestion is implemented; Phase B
-recommendation scoring is not implemented.
+Historical design for the baseline recommendation milestone. The recommendation engine, MCP
+integration, and wait-cost simulation described by the current project are now implemented; see
+[README.md](../README.md) for the current feature set and limitations.
 
 ## Goal
 

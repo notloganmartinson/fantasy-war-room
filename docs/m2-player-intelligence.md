@@ -1,5 +1,9 @@
 # M2: Player Intelligence and Available Draft Board
 
+> **Historical milestone document:** This document is preserved to show the project's engineering
+> evolution and may describe an earlier implementation stage. See [README.md](../README.md) for
+> current behavior.
+
 ## Goal
 
 Build a local, time-aware player intelligence layer that:
@@ -406,4 +410,3 @@ Update the README with:
 * a statement that M2 does not yet recommend picks
 
 Include a small synthetic ranking CSV fixture that is safe to redistribute.
-

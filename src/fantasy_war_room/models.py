@@ -163,7 +163,7 @@ class RankingIssue(BaseModel):
 
 
 class AdpSnapshot(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     adp_snapshot_id: str
     source: str
     source_version: str
@@ -180,6 +180,10 @@ class AdpSnapshot(BaseModel):
     matched_row_count: int
     unresolved_row_count: int
     ambiguous_row_count: int
+    source_uri: str | None = None
+    fetched_at: datetime | None = None
+    source_payload_hash: str | None = None
+    transformation_version: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> AdpSnapshot:
@@ -201,6 +205,10 @@ class AdpSnapshot(BaseModel):
             unresolved_row_count=row[14],
             ambiguous_row_count=row[15],
             schema_version=row[16],
+            source_uri=row[17],
+            fetched_at=row[18],
+            source_payload_hash=row[19],
+            transformation_version=row[20],
         )
 
 
@@ -233,8 +241,71 @@ class AdpIssue(BaseModel):
         )
 
 
-class TeamScheduleSnapshot(BaseModel):
+class MarketBoardSnapshot(BaseModel):
     schema_version: str = "1.0"
+    market_board_snapshot_id: str
+    source: str
+    source_version: str
+    transformation_version: str
+    derived_from_adp_snapshot_id: str
+    season: str
+    league_size: int
+    scoring_format: str
+    draft_type: str
+    observed_at: datetime
+    fetched_at: datetime | None
+    imported_at: datetime
+    payload_hash: str
+    source_uri: str | None
+    source_payload_hash: str | None
+    identity_resolver_version: str
+    total_row_count: int
+    matched_row_count: int
+    unresolved_row_count: int
+    ambiguous_row_count: int
+
+    @classmethod
+    def from_row(cls, row: tuple[Any, ...]) -> MarketBoardSnapshot:
+        return cls(
+            market_board_snapshot_id=row[0],
+            source=row[1],
+            source_version=row[2],
+            transformation_version=row[3],
+            derived_from_adp_snapshot_id=row[4],
+            season=row[5],
+            league_size=row[6],
+            scoring_format=row[7],
+            draft_type=row[8],
+            observed_at=row[9],
+            fetched_at=row[10],
+            imported_at=row[11],
+            payload_hash=row[12],
+            source_uri=row[13],
+            source_payload_hash=row[14],
+            identity_resolver_version=row[15],
+            total_row_count=row[16],
+            matched_row_count=row[17],
+            unresolved_row_count=row[18],
+            ambiguous_row_count=row[19],
+            schema_version=row[20],
+        )
+
+
+class MarketBoardIssue(BaseModel):
+    schema_version: str = "1.0"
+    market_board_snapshot_id: str
+    source_row_number: int
+    source_player_name: str
+    source_position: str | None
+    source_team: str | None
+    match_status: str
+    reason: str
+    candidate_player_ids: list[str]
+    raw_payload: dict[str, Any]
+
+
+class TeamScheduleSnapshot(BaseModel):
+    schema_version: str = "1.1"
     schedule_snapshot_id: str
     source: str
     source_version: str
@@ -244,6 +315,10 @@ class TeamScheduleSnapshot(BaseModel):
     payload_hash: str
     original_filename: str
     total_row_count: int
+    source_uri: str | None = None
+    fetched_at: datetime | None = None
+    source_payload_hash: str | None = None
+    transformation_version: str | None = None
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> TeamScheduleSnapshot:
@@ -258,6 +333,10 @@ class TeamScheduleSnapshot(BaseModel):
             original_filename=row[7],
             total_row_count=row[8],
             schema_version=row[9],
+            source_uri=row[10],
+            fetched_at=row[11],
+            source_payload_hash=row[12],
+            transformation_version=row[13],
         )
 
 

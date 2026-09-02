@@ -12,8 +12,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from fantasy_war_room.errors import ConfigurationError
 
 APP_NAME = "fantasy-war-room"
-CONFIG_SCHEMA_VERSION = "2.0"
-RecommendationModelSelection = Literal["baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"]
+CONFIG_SCHEMA_VERSION = "3.0"
+DraftContextType = Literal["league", "standalone"]
+IntelligenceMode = Literal["quick", "personalized", "advanced"]
+RecommendationModelSelection = Literal[
+    "portable-market-1.0",
+    "baseline-1.0",
+    "trusted-board-1.0",
+    "trusted-board-1.1",
+]
 
 
 def app_dirs() -> PlatformDirs:
@@ -41,6 +48,20 @@ class LeagueContext(BaseModel):
     strategy: str | None = None
 
 
+class ActiveDraftSession(BaseModel):
+    """Selected draft references; authoritative draft and league facts stay in snapshots."""
+
+    model_config = ConfigDict(frozen=True)
+    schema_version: str = "1.0"
+    provider: str = "sleeper"
+    draft_id: str
+    context_type: DraftContextType
+    season: str
+    source_league_id: str | None = None
+    scoring_context_league_id: str | None = None
+    draft_slot: int | None = Field(default=None, ge=1)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FWR_",
@@ -55,6 +76,9 @@ class Settings(BaseSettings):
     sleeper_league_id: str | None = None
     active_league_id: str | None = None
     league_contexts: dict[str, LeagueContext] = Field(default_factory=dict)
+    active_draft_session: ActiveDraftSession | None = None
+    active_draft_session_invalidated: bool = False
+    intelligence_mode: IntelligenceMode | None = None
     season: str = Field(default_factory=lambda: str(datetime.now(UTC).year))
     db_path: Path = Field(default_factory=default_db_path)
     poll_seconds: float = 2.0
@@ -77,19 +101,59 @@ class Settings(BaseSettings):
         return self.league_contexts.get(league_id)
 
     @property
+    def draft_configuration_context(self) -> LeagueContext | None:
+        """Resolve preferences for the exact active session, with a legacy fallback."""
+        session = self.active_draft_session
+        if session is None:
+            return self.active_context
+        if session.context_type == "league":
+            context_id = session.source_league_id
+            if context_id is None or session.scoring_context_league_id != context_id:
+                return None
+        else:
+            context_id = session.scoring_context_league_id
+            if session.source_league_id is not None or context_id is None:
+                return None
+        return self.league_contexts.get(context_id)
+
+    @property
     def active_strategy(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.strategy if context is not None else self.strategy
 
     @property
     def active_ranking_source(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.ranking_source if context is not None else None
 
     @property
     def active_recommendation_model(self) -> str | None:
-        context = self.active_context
+        context = self.draft_configuration_context
         return context.recommendation_model if context is not None else None
+
+
+def active_session_compatibility(settings: Settings) -> tuple[bool, str | None]:
+    """Validate an active session against its structure and effective league selection."""
+    session = settings.active_draft_session
+    if session is None:
+        return True, None
+    if session.context_type == "league":
+        context_league_id = session.source_league_id
+        if context_league_id is None or session.scoring_context_league_id != context_league_id:
+            return False, "league session source and scoring context must identify one league"
+    else:
+        context_league_id = session.scoring_context_league_id
+        if session.source_league_id is not None:
+            return False, "standalone session cannot have a source league"
+        if context_league_id is None:
+            return True, None
+    effective_league_id = settings.sleeper_league_id or settings.active_league_id
+    if effective_league_id is not None and effective_league_id != context_league_id:
+        return (
+            False,
+            "active session configuration league does not match the effective selected league",
+        )
+    return True, None
 
 
 def _file_values(path: Path) -> dict[str, Any]:
@@ -150,10 +214,26 @@ def load_settings(**cli_values: Any) -> Settings:
                 context.season if isinstance(context, LeagueContext) else context["season"]
             )
     merged["sleeper_league_id"] = selected
-    return Settings(**merged)
+    settings = Settings(**merged)
+    compatible, _ = active_session_compatibility(settings)
+    if not compatible:
+        settings = settings.model_copy(
+            update={
+                "active_draft_session": None,
+                "active_draft_session_invalidated": True,
+            }
+        )
+    return settings
 
 
 def save_settings(settings: Settings) -> Path:
+    compatible, reason = active_session_compatibility(settings)
+    if settings.active_draft_session is not None and not compatible:
+        raise ConfigurationError(
+            "active_draft_session_incompatible",
+            "Refusing to persist an active draft session incompatible with the selected league",
+            {"reason": reason},
+        )
     path = config_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     persisted = {
@@ -165,6 +245,13 @@ def save_settings(settings: Settings) -> Path:
             key: context.model_dump(mode="json")
             for key, context in sorted(settings.league_contexts.items())
         },
+        "active_draft_session": (
+            settings.active_draft_session.model_dump(mode="json")
+            if settings.active_draft_session is not None
+            else None
+        ),
+        "active_draft_session_invalidated": settings.active_draft_session_invalidated,
+        "intelligence_mode": settings.intelligence_mode,
         "season": settings.season,
         "db_path": str(settings.db_path),
         "poll_seconds": settings.poll_seconds,
@@ -185,29 +272,106 @@ def with_league_context(
 ) -> Settings:
     contexts = dict(settings.league_contexts)
     previous = contexts.get(league_id) if preserve_preferences else None
+    selected_model = (
+        recommendation_model
+        if recommendation_model is not None
+        else (previous.recommendation_model if previous is not None else "portable-market-1.0")
+    )
     contexts[league_id] = LeagueContext(
         season=season,
         league_id=league_id,
         ranking_source=ranking_source
         if ranking_source is not None
         else (previous.ranking_source if previous else None),
-        recommendation_model=(
-            recommendation_model
-            if recommendation_model is not None
-            else (previous.recommendation_model if previous else None)
-        ),
+        recommendation_model=selected_model,
         strategy=strategy if strategy is not None else (previous.strategy if previous else None),
     )
-    return settings.model_copy(
-        update={
+    updates: dict[str, Any] = {
+        "config_schema_version": CONFIG_SCHEMA_VERSION,
+        "active_league_id": league_id,
+        "sleeper_league_id": league_id,
+        "season": season,
+        "league_contexts": contexts,
+        "strategy": None,
+    }
+    if settings.active_league_id != league_id:
+        updates.update(
+            {
+                "active_draft_session": None,
+                "active_draft_session_invalidated": True,
+            }
+        )
+    return settings.model_copy(update=updates)
+
+
+def with_active_draft_session(
+    settings: Settings,
+    *,
+    draft_id: str,
+    context_type: DraftContextType,
+    season: str,
+    source_league_id: str | None,
+    scoring_context_league_id: str | None,
+    draft_slot: int | None,
+) -> Settings:
+    updates: dict[str, Any] = {}
+    if scoring_context_league_id is not None:
+        if scoring_context_league_id not in settings.league_contexts:
+            raise ConfigurationError(
+                "draft_configuration_context_missing",
+                "Active draft session requires a saved scoring/configuration league context",
+                {"scoring_context_league_id": scoring_context_league_id},
+            )
+        if context_type == "league" and source_league_id != scoring_context_league_id:
+            raise ConfigurationError(
+                "draft_session_context_mismatch",
+                "League draft source and scoring context must identify the same league",
+            )
+        if context_type == "standalone" and source_league_id is not None:
+            raise ConfigurationError(
+                "draft_session_context_mismatch",
+                "Standalone draft session cannot have a source league",
+            )
+        context = settings.league_contexts[scoring_context_league_id]
+        updates.update(
+            {
+                "active_league_id": scoring_context_league_id,
+                "sleeper_league_id": scoring_context_league_id,
+                "season": context.season,
+            }
+        )
+    elif context_type != "standalone" or source_league_id is not None:
+        raise ConfigurationError(
+            "draft_session_context_missing",
+            "League draft session requires a scoring/configuration league context",
+        )
+    updates.update(
+        {
             "config_schema_version": CONFIG_SCHEMA_VERSION,
-            "active_league_id": league_id,
-            "sleeper_league_id": league_id,
-            "season": season,
-            "league_contexts": contexts,
-            "strategy": None,
+            "active_draft_session": ActiveDraftSession(
+                draft_id=draft_id,
+                context_type=context_type,
+                season=season,
+                source_league_id=source_league_id,
+                scoring_context_league_id=scoring_context_league_id,
+                draft_slot=draft_slot,
+            ),
+            "active_draft_session_invalidated": False,
         }
     )
+    return settings.model_copy(update=updates)
+
+
+def with_scoring_context(settings: Settings, *, league_id: str, season: str) -> Settings:
+    """Save minimal preferences for an explicitly selected scoring context."""
+    contexts = dict(settings.league_contexts)
+    if league_id not in contexts:
+        contexts[league_id] = LeagueContext(
+            league_id=league_id,
+            season=season,
+            recommendation_model="portable-market-1.0",
+        )
+    return settings.model_copy(update={"league_contexts": contexts})
 
 
 def for_resolved_sleeper_user(
@@ -229,6 +393,9 @@ def for_resolved_sleeper_user(
                 "sleeper_league_id": None,
                 "league_contexts": {},
                 "strategy": None,
+                "active_draft_session": None,
+                "active_draft_session_invalidated": False,
+                "intelligence_mode": None,
             }
         )
     return settings.model_copy(update=updates)

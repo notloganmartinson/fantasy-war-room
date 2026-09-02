@@ -14,6 +14,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from fantasy_war_room.bootstrap import resolve_effective_draft_configuration
 from fantasy_war_room.config import load_settings
 from fantasy_war_room.decision.models import OffensivePosition, RecommendationModelVersion
+from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import FwrError, InputError
 from fantasy_war_room.mcp.models import McpEnvelope, McpError
 from fantasy_war_room.mcp.repository import McpReadRepository
@@ -29,7 +30,11 @@ READ_ONLY = ToolAnnotations(
 )
 SERVER_INSTRUCTIONS = """Fantasy War Room is authoritative for synchronized draft facts. For
 “Who should I take?”, call recommend_pick first; it is the coherent source for turn, roster,
-candidates, and provenance. Never invent availability or next-pick probabilities.
+candidates, and provenance. portable-market-1.0 is an explicit market-order baseline and reports
+projection_backed=false; baseline/trusted-board models are projection-backed. Never describe the
+portable result as projected player quality or invent availability, rankings, projections, or ADP.
+Projection-specific roster, comparison, position-outlook, and enriched market tools may be
+unavailable in portable mode; do not fill their absent fields from memory.
 
 Use get_draft_state for direct pick, round, clock, recent-pick, or status questions. Use
 get_my_roster when roster construction matters, compare_players for direct comparisons, and
@@ -41,8 +46,11 @@ or scarcity concerns. Do not claim a player will survive or invent availability 
 MCP does not synchronize; if state is stale, tell the user to check fwr watch.
 Market context is descriptive, never a survival probability. Call get_market_context before
 calling a target early, aligned, or late, and get_opponent_demand before claiming positional
-pressure between picks. Bye concentration is context, not a prohibition. Never say a player is
-likely to survive; no calibrated model exists. Live news remains outside FWR.
+pressure between picks. Use simulate_next_pick_survival only for wait cost or urgency. Its output
+is an authoritative FWR simulated availability rate under the named model, not a ground-truth
+probability and not player-quality evidence. recommend_pick remains the deterministic authority
+for player-quality ordering; do not merge its score with survival rates. Bye concentration is
+context, not a prohibition. Live news remains outside FWR.
 """
 
 
@@ -147,6 +155,27 @@ def create_server(service: DraftCopilotService) -> MCPServer:
             "fwr.mcp.opponent-demand/1.0", lambda: service.get_opponent_demand(as_of=as_of)
         )
 
+    @server.tool(annotations=READ_ONLY, structured_output=False)
+    async def simulate_next_pick_survival(
+        canonical_player_ids: list[str],
+        simulation_count: int = 5_000,
+        seed: int = 0,
+        model: str = "adp-only-1.0",
+        as_of: str | None = None,
+    ) -> CallToolResult:
+        """Estimate candidate wait cost as a named model's simulated availability rate."""
+        return _call(
+            "fwr.mcp.next-pick-survival/1.0",
+            lambda: _survival(
+                service,
+                canonical_player_ids,
+                simulation_count,
+                seed,
+                model,
+                as_of,
+            ),
+        )
+
     return server
 
 
@@ -172,6 +201,35 @@ def _recommend_pick(
         model=_model(model) if model is not None else None,
         source=source,
         limit=limit,
+        as_of=as_of,
+    )
+
+
+def _survival(
+    service: DraftCopilotService,
+    canonical_player_ids: list[str],
+    simulation_count: int,
+    seed: int,
+    model: str,
+    as_of: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not 1 <= len(canonical_player_ids) <= 20:
+        raise InputError(
+            "invalid_player_count",
+            "simulate_next_pick_survival requires between 1 and 20 canonical player IDs",
+        )
+    if not 1 <= simulation_count <= 100_000:
+        raise InputError(
+            "invalid_simulation_count",
+            "simulation_count must be between 1 and 100000",
+        )
+    if not 0 <= seed <= 2**64 - 1:
+        raise InputError("invalid_seed", "seed must be an unsigned 64-bit integer")
+    return service.simulate_next_pick_survival(
+        canonical_player_ids=canonical_player_ids,
+        simulation_count=simulation_count,
+        seed=seed,
+        model=_survival_model(model),
         as_of=as_of,
     )
 
@@ -234,7 +292,12 @@ def _position(value: str | None) -> OffensivePosition | None:
 
 
 def _model(value: str) -> RecommendationModelVersion:
-    supported = {"baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"}
+    supported = {
+        "baseline-1.0",
+        "portable-market-1.0",
+        "trusted-board-1.0",
+        "trusted-board-1.1",
+    }
     if value not in supported:
         raise InputError(
             "unsupported_recommendation_model",
@@ -242,6 +305,21 @@ def _model(value: str) -> RecommendationModelVersion:
             {"model": value, "supported_models": sorted(supported)},
         )
     return cast(RecommendationModelVersion, value)
+
+
+def _survival_model(value: str) -> SurvivalModelVersion:
+    supported = {
+        "adp-only-1.0",
+        "adp-dispersion-1.0",
+        "adp-dispersion-roster-1.0",
+    }
+    if value not in supported:
+        raise InputError(
+            "unsupported_survival_model",
+            "Unsupported survival model",
+            {"model": value, "supported_models": sorted(supported)},
+        )
+    return cast(SurvivalModelVersion, value)
 
 
 def _limit(value: int) -> None:
@@ -258,7 +336,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--schedule-source", default="local-schedule")
     parser.add_argument(
         "--model",
-        choices=("baseline-1.0", "trusted-board-1.0", "trusted-board-1.1"),
+        choices=(
+            "baseline-1.0",
+            "portable-market-1.0",
+            "trusted-board-1.0",
+            "trusted-board-1.1",
+        ),
     )
     parser.add_argument("--database", type=Path)
     parser.add_argument("--strategy", default=os.getenv("FWR_MCP_STRATEGY"))

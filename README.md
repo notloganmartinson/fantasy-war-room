@@ -1,21 +1,108 @@
 # Fantasy War Room
 
-Fantasy War Room is a local-first CLI that records immutable Sleeper draft and player-directory
-snapshots in DuckDB, imports versioned ranking data, and reconstructs an available-player board
-as of a timezone-aware timestamp. Its deterministic recommendation engine can also serve a
-read-only local MCP draft copilot for Codex CLI.
+Fantasy War Room is a local-first fantasy-football decision system that combines live Sleeper
+league state, structured football data, deterministic analytics, probabilistic wait-cost
+modeling, and a read-only MCP copilot.
+
+Draft decisions depend on facts that change pick by pick, inputs that come from several sources,
+and the cost of waiting until your next turn. FWR normalizes those inputs into immutable,
+time-aware DuckDB snapshots, then produces reproducible recommendations and seeded simulated
+availability rates. A local MCP server lets supported AI clients inspect and explain those
+results without giving the language model ownership of draft state or calculations. Everything
+runs locally; synchronization remains an explicit CLI process.
+
+## What it does
+
+- Synchronizes live Sleeper league, roster, and draft state.
+- Provides a free compatible-market recommendation baseline, with projection-backed VORP,
+  scarcity, and roster-effect models available when richer inputs are configured.
+- Adds compatible ADP market context and seeded next-pick simulated availability rates to show
+  the cost of waiting.
+- Replays decisions at explicit historical timestamps without leaking future observations.
+- Supports portable multi-league setup and exposes the results through a local, read-only MCP.
+
+## Architecture
+
+```text
+Sleeper ------------------------\
+Fantasy Football Calculator ----\
+nflverse ------------------------ > normalized, versioned data -> DuckDB
+user rankings / projections ----/                              |
+                                                              v
+                                         deterministic recommendation engine
+                                                              |
+                                         probabilistic survival / wait-cost model
+                                                              |
+                                                       read-only MCP
+                                                              |
+                                                     AI client
+```
+
+FWR owns the facts and calculations. The AI client interprets and explains them.
+
+## Demo
+
+A live demo is available from the Fantasy War Room project on my LinkedIn profile.
+
+The recording script and reproducible setup are in the
+[60–90 second demo runbook](docs/demo-runbook.md).
+
+## Quick start
+
+See [Clean-clone onboarding](#clean-clone-onboarding) below. A clean clone can acquire everything
+needed for the free portable market mode; rankings and projections are optional enhanced inputs.
+
+## Why not just ask an LLM?
+
+An LLM is useful for interpreting tradeoffs, but it should not invent who is available, what a
+league scores, or how a recommendation was calculated. FWR deliberately separates authoritative
+source observations, identity normalization, deterministic analytics, probabilistic modeling,
+and optional personal strategy. AI clients reason over versioned MCP outputs with provenance
+while FWR remains the source of draft facts, rankings, projections, ADP, and simulation results.
 
 ## Clean-clone onboarding
 
 Python 3.12 and [uv](https://docs.astral.sh/uv/) are required.
+
+The primary setup flow is agent-native:
+
+```console
+git clone https://github.com/notloganmartinson/fantasy-war-room.git
+cd fantasy-war-room
+codex
+```
+
+Then say: **“Set up Fantasy War Room for me.”** Codex follows FWR's structured onboarding state,
+asks only for required human choices, configures the project-local MCP, and tells you when a
+restart is needed. Claude Code supports the equivalent flow: run `claude` in the repository and
+make the same request. Both clients consume one FWR-resolved MCP launch specification.
+
+For a standalone Sleeper mock, give the agent its draft URL or ID. FWR selects that exact draft;
+if exact scoring requires a league context, the agent presents compatible choices and never
+borrows another league silently.
+
+Manual CLI onboarding remains supported:
 
 ```console
 git clone https://github.com/notloganmartinson/fantasy-war-room.git
 cd fantasy-war-room
 uv sync
 uv run fwr setup --username YOUR_SLEEPER_USERNAME
+uv run fwr data refresh
+uv run fwr data status
 uv run fwr draft-ready
 uv run fwr codex configure
+```
+
+Agent/state-machine equivalents include:
+
+```console
+uv run fwr onboard --json
+uv run fwr status --json
+uv run fwr drafts connect DRAFT_OR_URL --json
+uv run fwr mcp configure --client codex --json
+uv run fwr mcp configure --client claude --json
+uv run fwr watch
 ```
 
 `setup` resolves the Sleeper account, selects a league, synchronizes its authoritative draft
@@ -23,9 +110,37 @@ state, and refreshes the canonical player directory. With multiple leagues it pr
 automation must pass `--league-id`. An unpublished draft order is reported as pending and setup
 is safe to rerun.
 
-Sleeper connectivity and intelligence readiness are separate. A clean clone has no private
-ranking, projection, ADP, or schedule imports. `draft-ready` reports each missing input and does
-not claim `READY` until required compatible ranking and projection data exist.
+Sleeper connectivity and intelligence readiness are separate. `data refresh` derives the
+active league's season, team count, scoring format, and draft type from synchronized Sleeper
+observations. It automatically acquires market-format ADP from Fantasy Football Calculator and
+derives both an immutable portable market board and NFL bye weeks from the nflverse schedule
+dataset. New league contexts select `portable-market-1.0`, so `draft-ready` can report `READY`
+without ranking or projection files. The portable result follows compatible FFC market order. FWR
+reports any secondary scoring differences from FFC's source assumptions and does not adjust ADP
+for them, fabricate projected points, or claim exact scoring compatibility.
+
+### Intelligence modes
+
+- **Free portable mode:** Sleeper state and player identity, market-format-compatible FFC ADP and its derived
+  market board, nflverse schedule/byes, market-based recommendations, and survival simulation.
+  No paid data is required.
+- **Enhanced mode:** compatible external or user-supplied rankings and league-scored projections
+  enable the projection-backed `baseline-1.0`, `trusted-board-1.0`, and `trusted-board-1.1`
+  models. An official FantasyPros adapter is not currently implemented.
+- **Personal mode:** custom ranking/projection imports and opt-in strategy profiles remain
+  supported and isolated per league.
+
+Fantasy Football Calculator's documented ADP API is free for personal and commercial use and
+requests attribution; its data is based on human mock drafts and updates daily. nflverse
+schedule data is distributed under CC BY 4.0. FWR caches sanitized raw responses for 24 hours in
+the XDG cache directory, then stores normalized immutable observations in DuckDB with source
+URI/version, fetch/observation/import times, source and normalized payload hashes, identity
+resolver version, and deterministic transformation version. Use `--force` to bypass the cache.
+
+FantasyPros rankings and projections are not acquired automatically. Its official API and
+licensing require separate authorization, so it is not a portable default. Existing local ranking
+and CBS projection imports remain available; no private exports or user database are bundled or
+required.
 
 For an unattended setup:
 
@@ -48,6 +163,10 @@ working directory.
 
 ```console
 uv run fwr setup --username alice
+uv run fwr data refresh
+uv run fwr data status --json
+uv run fwr data bootstrap
+uv run fwr data bootstrap --force --json
 uv run fwr leagues list
 uv run fwr leagues use LEAGUE_ID
 uv run fwr context
@@ -67,6 +186,10 @@ uv run fwr board --source my-rankings --as-of 2026-08-20T19:00:00Z
 uv run fwr recommend --draft-id 987654 --model trusted-board-1.1
 uv run fwr recommend --draft-id 987654 --draft-slot 7 \
   --strategy logan-ppr-2flex-1.0
+uv run fwr survival --draft-id 987654 --player-id CANONICAL_ID \
+  --simulations 5000 --seed 42 --survival-model adp-only-1.0
+uv run fwr survival-evaluate --draft-id COMPLETED_DRAFT_ID --draft-slot 7 \
+  --simulations 5000 --seed 42 --json
 uv run fwr strategies show logan-ppr-2flex-1.0
 ```
 
@@ -75,6 +198,10 @@ optional ranking source, recommendation model, and strategy. Scoring, roster con
 draft order, and draft state come from Sleeper observations. Switching leagues does not leak
 preferences between them. Personalized strategies are opt-in; `logan-ppr-2flex-1.0` remains
 available but is never selected for a new league.
+
+`parlay-play-hybrid` is a private/manual ranking source name used by an existing personal
+context. Its paid-creator-derived data is not bundled, exposed, redistributed, or acquired by
+FWR. Availability of the public strategy profile does not grant access to that ranking dataset.
 
 The configured Sleeper user ID is the account boundary. Running setup or configure for a
 different resolved user clears the previous user's active league and saved league contexts while
@@ -108,6 +235,18 @@ uv run fwr rankings import rankings.csv \
 Rows resolve by explicit provider ID or exact normalized identity. Ambiguous and unresolved rows
 are preserved for inspection with `fwr rankings unresolved`; fuzzy matches are never accepted.
 
+`portable-market-1.0` requires a market-format-compatible FFC ADP snapshot and its deterministically
+derived market board, but no projection snapshot. It orders currently available players by that
+market board and exposes roster/position context separately. It intentionally provides no
+projected points, replacement projection, VORP, projection scarcity, or starter projection delta.
+FFC supports standard, half-PPR, and PPR market buckets; secondary scoring differences are exposed
+as source-assumption limitations rather than represented as adjusted ADP.
+Survival remains a separate seeded wait-cost lane and never changes this deterministic ordering.
+
+`baseline-1.0`, `trusted-board-1.0`, and `trusted-board-1.1` retain their compatible ranking and
+exact-scoring projection requirements and existing semantics. A selected strategy may additionally
+require an exact source/model combination. There is no silent fallback between these modes.
+
 All finite commands accept `--json` and return a stable envelope with `status`, `command`, `data`,
 and `error`. In JSON mode stdout contains JSON only. `watch` remains the interactive continuous
 command.
@@ -116,6 +255,12 @@ Exit codes are: `0` success, `1` unexpected failure, `2` invalid input, `3` conf
 failure, `4` Sleeper/network failure, and `5` resource not found.
 
 ## Local MCP draft copilot
+
+### MCP clients
+
+FWR exposes a standard local stdio MCP server. Codex is the primary tested integration; Claude
+Code can connect to the same server using its standard MCP CLI. See the
+[Claude Code setup guide](docs/claude-code.md). Other clients are not currently claimed as tested.
 
 Keep synchronization in a separate terminal:
 
@@ -131,11 +276,33 @@ directory. It preserves unrelated Codex configuration. An equivalent unmanaged F
 be removed manually before the command will take ownership. Restart Codex in the trusted
 repository afterward.
 
+The read-only `simulate_next_pick_survival` MCP tool reports a candidate's simulated
+availability rate before the user's target pick under a named model. It is a wait-cost signal,
+not a ground-truth probability or a replacement for the deterministic player-quality ordering
+from `recommend_pick`.
+
 Pass `--strategy logan-ppr-2flex-1.0` to enable the M3.5A deterministic strategy layer.
 The initial profile is compatible with draft slot 7 and preserves the complete raw
 `trusted-board-1.1` result alongside its strategy-adjusted ordering. Strategy-aware MCP
 startup also exposes `get_draft_strategy` and embeds the active profile in fresh-session
 instructions.
+
+## Limitations
+
+- Clean clones can automatically acquire compatible Fantasy Football Calculator ADP, a derived
+  market board, and nflverse schedule/bye data. Projection-backed modes still require compatible
+  external or user-supplied rankings and projections.
+- `portable-market-1.0` is a market-based baseline, not a projection-backed valuation model.
+  Projection-derived VORP, scarcity, and lineup deltas are intentionally unavailable in this mode.
+- `adp-only-1.0` remains the default survival model because current historical evidence is
+  insufficient to justify a more complex default.
+- Simulated availability rates are outputs of a named model, not calibrated or ground-truth
+  probabilities.
+- Live provider support is currently limited to Sleeper NFL redraft snake drafts that are
+  single-quarterback and non-keeper. League size, scoring, roster construction, draft slot, and
+  round count are still derived from Sleeper rather than hard-coded.
+- The MCP is deliberately local, read-only, and network-free. Live synchronization runs through
+  a separate CLI process.
 
 ## Development
 
@@ -145,10 +312,3 @@ uv run ruff check .
 uv run mypy src
 uv run pytest
 ```
-
-doctor: makes sure fwr is installed and configured correctly on the current machine
-discover: connect to Sleeper using configured username and finds your leagues
-- returns league name, league id, draft id, number of teams, league status and season
-sync: downloads current state of configured league and draft then considers saving it to DuckDB
-- retrieves league settings scoring settings roster positions draft metadata completed picks
-fetches the current draft state and save it only if something has changed

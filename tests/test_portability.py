@@ -174,7 +174,7 @@ def test_legacy_config_migrates_without_losing_preferences(xdg: Path) -> None:
     assert settings.poll_seconds == 3.5
     save_settings(settings)
     persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert persisted["config_schema_version"] == "2.0"
+    assert persisted["config_schema_version"] == "3.0"
     assert "sleeper_league_id" not in persisted
     assert persisted["league_contexts"]["league-7"]["strategy"] == "logan-ppr-2flex-1.0"
 
@@ -463,8 +463,9 @@ def test_noninteractive_setup_clean_clone_is_explicitly_not_ready(
     assert data["draft_ready"] is False
     assert load_settings().active_strategy is None
     names = {check["name"]: check for check in data["readiness_checks"]}
-    assert names["compatible_ranking"]["status"] == "fail"
-    assert names["compatible_projection"]["status"] == "fail"
+    assert names["compatible_ranking"]["status"] == "skipped"
+    assert names["compatible_projection"]["status"] == "skipped"
+    assert names["compatible_market_board"]["status"] == "fail"
     with pytest.raises(Exception) as raised:
         generate_codex_config(load_settings(), repository_root=xdg.parent / "project")
     assert raised.value.code == "codex_context_incomplete"

@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import tomllib
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,9 +12,10 @@ from typing import Any, cast
 
 import duckdb
 
-from fantasy_war_room.config import Settings
+from fantasy_war_room.config import Settings, active_session_compatibility
 from fantasy_war_room.decision.models import RecommendationModelVersion
 from fantasy_war_room.errors import ConfigurationError, InputError
+from fantasy_war_room.external_sources import classify_ffc_market_compatibility
 from fantasy_war_room.models import Snapshot
 from fantasy_war_room.repository import (
     IntelligenceRepository,
@@ -28,6 +30,7 @@ from fantasy_war_room.strategy.load import load_strategy_profile
 from fantasy_war_room.strategy.models import StrategyProfile
 
 RECOMMENDATION_DEFAULT = "baseline-1.0"
+PORTABLE_MARKET_SOURCE = "fantasy-football-calculator-market-board"
 PROJECTION_DEFAULT = "cbs"
 MANAGED_START = "# BEGIN FWR MANAGED MCP"
 MANAGED_END = "# END FWR MANAGED MCP"
@@ -41,9 +44,25 @@ class EffectiveDraftConfiguration:
     strategy_profile: StrategyProfile | None
 
 
+@dataclass(frozen=True)
+class ResolvedMcpLaunchSpec:
+    schema_version: str
+    executable: str
+    working_directory: str
+    database: str
+    draft_id: str
+    draft_slot: int
+    ranking_source: str
+    recommendation_model: str
+    strategy: str | None
+    adp_source: str
+    schedule_source: str
+    arguments: tuple[str, ...]
+
+
 def resolve_effective_draft_configuration(settings: Settings) -> EffectiveDraftConfiguration:
     """Resolve explicit context choices, strategy requirements, then portable defaults."""
-    context = settings.active_context
+    context = settings.draft_configuration_context
     if context is None:
         return EffectiveDraftConfiguration(
             recommendation_model="baseline-1.0",
@@ -74,8 +93,11 @@ def resolve_effective_draft_configuration(settings: Settings) -> EffectiveDraftC
             )
         model = profile.required_raw_model
         source = profile.required_ranking_source
+    selected_model = cast(RecommendationModelVersion, model or RECOMMENDATION_DEFAULT)
+    if selected_model == "portable-market-1.0" and source is None:
+        source = PORTABLE_MARKET_SOURCE
     return EffectiveDraftConfiguration(
-        recommendation_model=cast(RecommendationModelVersion, model or RECOMMENDATION_DEFAULT),
+        recommendation_model=selected_model,
         ranking_source=source,
         strategy=context.strategy,
         strategy_profile=profile,
@@ -125,13 +147,16 @@ def draft_slot(snapshot: Snapshot, sleeper_user_id: str | None) -> int | None:
 
 
 def context_data(settings: Settings) -> dict[str, Any]:
-    context = settings.active_context
+    context = settings.draft_configuration_context
     return {
         "schema_version": "1.0",
         "username": settings.sleeper_username,
         "user_id": settings.sleeper_user_id,
         "active_league_id": settings.active_league_id,
-        "active_context": context,
+        "active_context": settings.active_context,
+        "draft_configuration_context": context,
+        "active_session": settings.active_draft_session,
+        "intelligence_mode": settings.intelligence_mode,
         "database": str(settings.db_path.expanduser().resolve()),
     }
 
@@ -150,7 +175,9 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             }
         )
 
-    context = settings.active_context
+    context = settings.draft_configuration_context
+    session_compatible, session_compatibility_error = active_session_compatibility(settings)
+    session_invalid = settings.active_draft_session_invalidated or not session_compatible
     configured = bool(settings.sleeper_username and settings.sleeper_user_id)
     check(
         "user_configuration",
@@ -162,15 +189,42 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         "active_league",
         True,
         "pass" if context else "fail",
-        "Active league selected" if context else "Run fwr setup and select a league",
+        (
+            "Draft configuration context resolved"
+            if context
+            else "Select or save the active session's league/scoring context"
+        ),
     )
     effective = resolve_effective_draft_configuration(settings) if context is not None else None
+    check(
+        "active_draft_session",
+        True,
+        "fail" if session_invalid else "pass",
+        (
+            session_compatibility_error
+            or "League selection changed; establish its active draft session"
+            if session_invalid
+            else (
+                "Active draft session selected"
+                if settings.active_draft_session is not None
+                else "Legacy active-league draft resolution remains available"
+            )
+        ),
+    )
+    if session_invalid:
+        return _readiness_result(
+            settings,
+            checks,
+            None,
+            None,
+            strategy_selected=bool(effective and effective.strategy),
+        )
     if context is None or not settings.db_path.expanduser().exists():
         check(
             "synchronized_draft_snapshot",
             True,
             "fail",
-            "No local database or active league snapshot",
+            "No local database or active draft configuration context",
         )
         return _readiness_result(
             settings,
@@ -184,11 +238,19 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     repository.initialize()
     now = datetime.now(UTC)
     with duckdb.connect(str(repository.path)) as connection:
-        row = connection.execute(
-            "SELECT * FROM draft_snapshots WHERE league_id=? "
-            "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
-            [context.league_id],
-        ).fetchone()
+        session = settings.active_draft_session
+        if session is not None:
+            row = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE draft_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [session.draft_id],
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM draft_snapshots WHERE league_id=? "
+                "ORDER BY observed_at DESC, snapshot_id DESC LIMIT 1",
+                [context.league_id],
+            ).fetchone()
         if row is None:
             check("synchronized_draft_snapshot", True, "fail", "Run fwr setup or fwr sync")
             return _readiness_result(
@@ -200,6 +262,33 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             )
         snapshot = repository.state_at(str(row[2]), now)
         assert snapshot is not None
+        session_error: str | None = None
+        if session is not None:
+            if session.context_type == "league":
+                consistent = (
+                    session.source_league_id is not None
+                    and session.source_league_id == session.scoring_context_league_id
+                    and snapshot.source_league_id == session.source_league_id
+                    and snapshot.scoring_context_league_id == session.scoring_context_league_id
+                )
+            else:
+                consistent = (
+                    session.source_league_id is None
+                    and snapshot.source_league_id is None
+                    and session.scoring_context_league_id is not None
+                    and snapshot.scoring_context_league_id == session.scoring_context_league_id
+                )
+            if not consistent:
+                session_error = "Active draft session does not match snapshot provenance"
+        check(
+            "session_context_consistency",
+            True,
+            "fail" if session_error else "pass",
+            session_error or "Active draft and scoring-context provenance are consistent",
+            draft_id=snapshot.draft_id,
+            source_league_id=snapshot.source_league_id,
+            scoring_context_league_id=snapshot.scoring_context_league_id,
+        )
         check(
             "synchronized_draft_snapshot",
             True,
@@ -215,6 +304,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         scoring_format: str | None = None
         team_count: int | None = None
         scoring_hash: str | None = None
+        ffc_market_compatibility: dict[str, Any] | None = None
         try:
             team_count, _, draft_type = _recommendation_draft_settings(snapshot)
             league_type, keeper_status = _recommendation_league_format(
@@ -234,6 +324,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
                 )
             normalized = {str(key): float(value) for key, value in scoring.items()}
             scoring_format = _recommendation_scoring_format(normalized)
+            with suppress(InputError):
+                ffc_market_compatibility = classify_ffc_market_compatibility(normalized).as_dict()
             scoring_hash = _canonical_hash(normalized)
             if draft_type != "snake" or league_type != "redraft" or keeper_status != "non_keeper":
                 raise InputError(
@@ -288,6 +380,7 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchall()
         sources = sorted({str(item[0]) for item in ranking_rows})
         assert effective is not None
+        portable_model = effective.recommendation_model == "portable-market-1.0"
         selected_source = effective.ranking_source
         source_policy = (
             "strategy_requirement"
@@ -299,14 +392,20 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
         ranking = next((item for item in ranking_rows if item[0] == selected_source), None)
         check(
             "compatible_ranking",
-            True,
-            "pass" if ranking else "fail",
-            "Compatible ranking snapshot selected"
-            if ranking
-            else "Import compatible rankings and select ranking_source",
+            not portable_model,
+            "skipped" if portable_model else ("pass" if ranking else "fail"),
+            "Projection-backed ranking is not required by portable-market-1.0"
+            if portable_model
+            else (
+                "Compatible ranking snapshot selected"
+                if ranking
+                else "Import compatible rankings and select ranking_source"
+            ),
             source=selected_source,
             resolution_policy=source_policy,
             compatible_sources=sources,
+            acquisition="user_supplied",
+            optional_provider="FantasyPros (credentials required; adapter not implemented)",
             snapshot_id=str(ranking[1]) if ranking else None,
         )
 
@@ -320,13 +419,19 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchone()
         check(
             "compatible_projection",
-            True,
-            "pass" if projection else "fail",
-            "Compatible projection snapshot is available"
-            if projection
-            else "Import projections for this league's exact scoring settings",
+            not portable_model,
+            "skipped" if portable_model else ("pass" if projection else "fail"),
+            "Projection snapshot is intentionally not required by portable-market-1.0"
+            if portable_model
+            else (
+                "Compatible projection snapshot is available"
+                if projection
+                else "Import projections for this league's exact scoring settings"
+            ),
             source=PROJECTION_DEFAULT,
             snapshot_id=str(projection[0]) if projection else None,
+            acquisition="user_supplied",
+            optional_provider="FantasyPros (credentials required; adapter not implemented)",
         )
 
         scoring_key = ranking_scoring if ranking_scoring != "custom" else None
@@ -340,13 +445,49 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             ).fetchone()
         check(
             "compatible_adp",
-            False,
+            portable_model,
             "pass" if adp else "missing",
-            "Compatible ADP is available"
+            "Market-format-compatible ADP is available"
             if adp
-            else "Optional: import compatible ADP for market context",
+            else (
+                "Run fwr data refresh to acquire market-format-compatible FFC ADP"
+                if portable_model
+                else "Optional: import compatible ADP for market context"
+            ),
             snapshot_id=str(adp[0]) if adp else None,
             source=str(adp[1]) if adp else None,
+            acquisition="automatic",
+            command="fwr data bootstrap",
+            market_compatibility=ffc_market_compatibility,
+        )
+        market_board = None
+        if scoring_key and team_count is not None:
+            market_board = connection.execute(
+                "SELECT market_board_snapshot_id, source, transformation_version "
+                "FROM market_board_snapshots WHERE season=? AND league_size=? "
+                "AND scoring_format=? AND draft_type='snake' "
+                "AND source='fantasy-football-calculator-market-board' "
+                "AND transformation_version='ffc-adp-to-market-board-1.0' "
+                "ORDER BY observed_at DESC, imported_at DESC LIMIT 1",
+                [context.season, team_count, scoring_key],
+            ).fetchone()
+        check(
+            "compatible_market_board",
+            portable_model,
+            "pass" if market_board else ("fail" if portable_model else "missing"),
+            "Market-format-compatible FFC portable market board is available"
+            if market_board
+            else (
+                "Run fwr data refresh to derive a market-format-compatible FFC market board"
+                if portable_model
+                else "Portable market board is not required by the configured model"
+            ),
+            snapshot_id=str(market_board[0]) if market_board else None,
+            source=str(market_board[1]) if market_board else None,
+            transformation_version=str(market_board[2]) if market_board else None,
+            acquisition="automatic",
+            command="fwr data refresh",
+            market_compatibility=ffc_market_compatibility,
         )
         schedule = connection.execute(
             "SELECT schedule_snapshot_id, source FROM team_schedule_snapshots "
@@ -362,6 +503,8 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
             else "Optional: import team schedule/bye data",
             snapshot_id=str(schedule[0]) if schedule else None,
             source=str(schedule[1]) if schedule else None,
+            acquisition="automatic",
+            command="fwr data bootstrap",
         )
 
     model = effective.recommendation_model
@@ -410,16 +553,25 @@ def readiness(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
     else:
         check("strategy", False, "skipped", "No personalized strategy selected")
     codex_path = repository_root / ".codex" / "config.toml"
-    configured_codex = (
-        codex_path.exists()
-        and "[mcp_servers.fantasy-war-room]" in codex_path.read_text(encoding="utf-8")
-    )
+    codex_text = codex_path.read_text(encoding="utf-8") if codex_path.exists() else ""
+    has_codex = "[mcp_servers.fantasy-war-room]" in codex_text
+    current_root = str(repository_root.resolve())
+    configured_codex = has_codex and current_root in codex_text
     check(
         "codex_mcp_configuration",
         False,
-        "pass" if configured_codex else "missing",
-        "Project FWR MCP configuration exists" if configured_codex else "Run fwr codex configure",
+        "pass" if configured_codex else ("fail" if has_codex else "missing"),
+        (
+            "Project FWR MCP configuration exists"
+            if configured_codex
+            else (
+                "FWR MCP configuration contains a stale repository path; regenerate it"
+                if has_codex
+                else "Run fwr mcp configure --client codex"
+            )
+        ),
         path=str(codex_path),
+        expected_working_directory=current_root,
     )
     return _readiness_result(
         settings,
@@ -444,14 +596,17 @@ def _readiness_result(
     definitions = {
         "user_configuration": (True, "Configure a Sleeper user"),
         "active_league": (True, "Select an active league"),
+        "active_draft_session": (True, "Establish an active draft session"),
         "supported_format": (True, "Synchronize a supported league format"),
         "synchronized_draft_snapshot": (True, "Synchronize the current draft"),
         "current_draft_id": (True, "Identify the current draft"),
+        "session_context_consistency": (True, "Resolve a consistent active draft session"),
         "draft_slot": (True, "Draft slot is pending or unavailable"),
         "player_directory": (True, "Synchronize the player directory"),
         "compatible_ranking": (True, "Import compatible ranking data"),
         "compatible_projection": (True, "Import compatible projection data"),
         "compatible_adp": (False, "Optional compatible ADP is unavailable"),
+        "compatible_market_board": (False, "Portable market board is unavailable"),
         "team_schedule": (False, "Optional team schedule/bye data is unavailable"),
         "recommendation_model": (True, "Resolve a recommendation model"),
         "strategy": (
@@ -489,6 +644,44 @@ def _readiness_result(
 
 
 def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[str, Any]:
+    spec = resolve_mcp_launch_spec(settings, repository_root=repository_root)
+    effective = resolve_effective_draft_configuration(settings)
+    args = list(spec.arguments)
+    block_lines = [
+        "[mcp_servers.fantasy-war-room]",
+        f"command = {json.dumps(spec.executable)}",
+        "args = [",
+        *(f"  {json.dumps(arg)}," for arg in args),
+        "]",
+        f"cwd = {json.dumps(spec.working_directory)}",
+        "startup_timeout_sec = 15",
+        "tool_timeout_sec = 30",
+        "required = false",
+    ]
+    block = "\n".join(block_lines) + "\n"
+    managed_block = f"{MANAGED_START}\n{block}{MANAGED_END}\n"
+    path = repository_root / ".codex" / "config.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    updated = _update_codex_toml(existing, managed_block)
+    path.write_text(updated, encoding="utf-8")
+    return {
+        **spec.__dict__,
+        "path": str(path),
+        "written": True,
+        "toml_block": block,
+        "strategy": effective.strategy,
+    }
+
+
+def resolve_mcp_launch_spec(settings: Settings, *, repository_root: Path) -> ResolvedMcpLaunchSpec:
+    session_compatible, reason = active_session_compatibility(settings)
+    if not session_compatible:
+        raise ConfigurationError(
+            "active_draft_session_incompatible",
+            "Active draft session is incompatible with the effective league selection",
+            {"reason": reason},
+        )
     effective = resolve_effective_draft_configuration(settings)
     state = readiness(settings, repository_root=repository_root)
     failures = [item for item in state["checks"] if item["required"] and item["status"] != "pass"]
@@ -498,8 +691,6 @@ def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[
             "Active draft context is not sufficient to configure Codex",
             {"checks": failures},
         )
-    context = settings.active_context
-    assert context is not None
     args = [
         "run",
         "--project",
@@ -519,37 +710,20 @@ def generate_codex_config(settings: Settings, *, repository_root: Path) -> dict[
     if effective.strategy:
         args.extend(["--strategy", effective.strategy])
     uv = shutil.which("uv") or "uv"
-    block_lines = [
-        "[mcp_servers.fantasy-war-room]",
-        f"command = {json.dumps(uv)}",
-        "args = [",
-        *(f"  {json.dumps(arg)}," for arg in args),
-        "]",
-        f"cwd = {json.dumps(str(repository_root))}",
-        "startup_timeout_sec = 15",
-        "tool_timeout_sec = 30",
-        "required = false",
-    ]
-    block = "\n".join(block_lines) + "\n"
-    managed_block = f"{MANAGED_START}\n{block}{MANAGED_END}\n"
-    path = repository_root / ".codex" / "config.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    updated = _update_codex_toml(existing, managed_block)
-    path.write_text(updated, encoding="utf-8")
-    return {
-        "schema_version": "1.0",
-        "path": str(path),
-        "written": True,
-        "draft_id": state["draft_id"],
-        "draft_slot": state["draft_slot"],
-        "ranking_source": state["ranking_source"],
-        "recommendation_model": state["recommendation_model"],
-        "strategy": effective.strategy,
-        "database": str(settings.db_path.expanduser().resolve()),
-        "working_directory": str(repository_root),
-        "toml_block": block,
-    }
+    return ResolvedMcpLaunchSpec(
+        schema_version="1.0",
+        executable=uv,
+        working_directory=str(repository_root.resolve()),
+        database=str(settings.db_path.expanduser().resolve()),
+        draft_id=str(state["draft_id"]),
+        draft_slot=int(state["draft_slot"]),
+        ranking_source=str(state["ranking_source"]),
+        recommendation_model=str(state["recommendation_model"]),
+        strategy=effective.strategy,
+        adp_source="local-adp",
+        schedule_source="local-schedule",
+        arguments=tuple(args),
+    )
 
 
 def _update_codex_toml(existing: str, managed_block: str) -> str:

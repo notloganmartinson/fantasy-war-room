@@ -164,6 +164,30 @@ def render_board(players: list[Any]) -> None:
 
 
 def render_recommendation(result: Any) -> None:
+    if getattr(result, "recommendation_model_version", None) == "portable-market-1.0":
+        context = result.turn_context
+        status = "ON THE CLOCK" if context.on_the_clock else "waiting"
+        stdout.print("[bold]Model:[/bold] portable-market-1.0 (projection-backed: no)")
+        stdout.print(
+            f"[bold]Round {context.current_round}, pick {context.next_overall_pick}[/bold] "
+            f"({status}); your next pick: {context.user_next_scheduled_pick}"
+        )
+        table = Table(title="Portable market recommendations")
+        for heading in ("#", "Player", "Pos", "Team", "Market rank", "FFC ADP"):
+            table.add_column(heading)
+        for candidate in result.candidates:
+            table.add_row(
+                str(candidate.recommendation_rank),
+                candidate.player_name,
+                candidate.position,
+                candidate.team or "-",
+                str(candidate.overall_market_rank),
+                _display_number(candidate.overall_adp),
+            )
+        stdout.print(table)
+        for limitation in result.limitations:
+            stdout.print(f"[yellow]Limitation:[/yellow] {limitation}")
+        return
     if hasattr(result, "raw_recommendation"):
         stdout.print(
             f"[bold]Strategy:[/bold] {result.strategy_provenance.profile_name} "
@@ -283,6 +307,64 @@ def render_recommendation(result: Any) -> None:
     stdout.print("Next-pick probability: unavailable (uncalibrated)")
     for limitation in result.limitations:
         stdout.print(f"[yellow]Limitation:[/yellow] {limitation}")
+
+
+def render_survival(response: Any) -> None:
+    result = response.simulation
+    names = response.provenance.get("candidate_names", {})
+    stdout.print(
+        f"[bold]Survival model:[/bold] {result.model_version}; "
+        f"runs={result.simulation_count}; seed={result.seed}"
+    )
+    stdout.print(
+        f"Current pick {result.current_overall_pick}; simulation starts at "
+        f"{result.simulation_start_pick}; target user pick {result.target_user_pick}; "
+        f"opponent-pick horizon {result.intervening_opponent_pick_count}."
+    )
+    for candidate in result.candidates:
+        name = names.get(candidate.canonical_player_id) or candidate.canonical_player_id
+        if candidate.status == "modeled":
+            stdout.print(
+                f"If you pass on {name} at pick {result.current_overall_pick}, {name} remained "
+                f"available before your target pick {result.target_user_pick} in "
+                f"{candidate.survived_simulation_count:,} of "
+                f"{candidate.simulation_count:,} model runs: "
+                f"{candidate.simulated_availability_rate:.1%} simulated availability rate."
+            )
+        else:
+            stdout.print(f"{name}: {candidate.status}; no simulated availability rate.")
+    coverage = result.pool_coverage
+    stdout.print(
+        f"Modeled pool: {coverage.modeled_available_players}/"
+        f"{coverage.total_available_relevant_players} available relevant players "
+        f"({coverage.coverage_rate:.1%})."
+    )
+    if coverage.warning_codes:
+        stdout.print("Warnings: " + ", ".join(coverage.warning_codes))
+    for limitation in result.limitations:
+        stdout.print(f"Limitation: {limitation}")
+
+
+def render_survival_evaluation(report: Any) -> None:
+    stdout.print(
+        f"[bold]Historical survival evaluation:[/bold] {report.draft_id}; "
+        f"policy={report.evaluation_policy.policy_version}"
+    )
+    stdout.print(
+        f"Decision points: {report.evaluated_decision_point_count}/"
+        f"{report.eligible_decision_point_count}; common candidate cases: "
+        f"{report.candidate_population.modeled_evaluation_candidates}."
+    )
+    for model in report.models:
+        stdout.print(
+            f"{model.model_version}: n={model.evaluated_candidate_count}, "
+            f"Brier={_display_number(model.brier_score)}, "
+            f"log loss={_display_number(model.log_loss)}, "
+            f"mean simulated rate={_display_number(model.mean_simulated_availability_rate)}, "
+            f"observed survival={_display_number(model.actual_survival_rate)}"
+        )
+    stdout.print(f"Recommended default: {report.recommended_default}")
+    stdout.print(report.recommendation_reason)
 
 
 def _display_number(value: float | None) -> str:

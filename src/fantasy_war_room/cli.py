@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,21 +18,28 @@ from fantasy_war_room.bootstrap import (
     generate_codex_config,
     readiness,
     resolve_effective_draft_configuration,
+    resolve_mcp_launch_spec,
 )
 from fantasy_war_room.bootstrap import (
     draft_slot as resolve_setup_draft_slot,
 )
 from fantasy_war_room.config import (
+    IntelligenceMode,
     RecommendationModelSelection,
+    active_session_compatibility,
     app_dirs,
     config_file_path,
     ensure_directories,
     for_resolved_sleeper_user,
     load_settings,
     save_settings,
+    with_active_draft_session,
     with_league_context,
+    with_scoring_context,
 )
+from fantasy_war_room.data_bootstrap import bootstrap_data, data_status
 from fantasy_war_room.decision.models import RecommendationModelVersion
+from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import (
     ConfigurationError,
     ExitCode,
@@ -61,6 +70,8 @@ from fantasy_war_room.rendering import (
     render_ranking_issues,
     render_rankings,
     render_recommendation,
+    render_survival,
+    render_survival_evaluation,
     stdout,
 )
 from fantasy_war_room.repository import IntelligenceRepository, SnapshotRepository
@@ -76,6 +87,8 @@ from fantasy_war_room.services import sync as sync_draft
 from fantasy_war_room.services import watch as watch_draft
 from fantasy_war_room.sleeper import SleeperClient
 from fantasy_war_room.strategy.load import load_strategy_profile, strategy_directory
+from fantasy_war_room.survival import build_survival_response
+from fantasy_war_room.survival_evaluation import evaluate_historical_survival
 
 app = typer.Typer(
     help="Local-first, time-aware fantasy football decision data.", no_args_is_help=True
@@ -89,6 +102,8 @@ adp_app = typer.Typer(help="Import and inspect immutable ADP snapshots.")
 schedules_app = typer.Typer(help="Import and inspect immutable team schedule snapshots.")
 leagues_app = typer.Typer(help="Inspect and switch saved Sleeper league contexts.")
 codex_app = typer.Typer(help="Configure the project-local Codex integration.")
+mcp_app = typer.Typer(help="Configure a local read-only MCP client.")
+data_app = typer.Typer(help="Acquire and inspect portable football intelligence.")
 app.add_typer(players_app, name="players")
 app.add_typer(rankings_app, name="rankings")
 app.add_typer(projections_app, name="projections")
@@ -98,8 +113,470 @@ app.add_typer(adp_app, name="adp")
 app.add_typer(schedules_app, name="schedules")
 app.add_typer(leagues_app, name="leagues")
 app.add_typer(codex_app, name="codex")
+app.add_typer(mcp_app, name="mcp")
+app.add_typer(data_app, name="data")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _agent_status(settings: Any) -> dict[str, Any]:
+    base = {
+        "schema_version": "1.0",
+        "sleeper_account": {
+            "username": settings.sleeper_username,
+            "user_id": settings.sleeper_user_id,
+        },
+        "selected_league": settings.active_context,
+        "active_session": settings.active_draft_session,
+        "intelligence_mode": settings.intelligence_mode,
+        "strategy": settings.active_strategy,
+        "database": str(settings.db_path.expanduser().resolve()),
+    }
+    if not settings.sleeper_username:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "question": {
+                    "id": "sleeper_username",
+                    "prompt": "What is your Sleeper username?",
+                    "choices": [],
+                },
+                "readiness": None,
+                "next_actions": [],
+            }
+        )
+    if settings.active_draft_session is None and settings.active_context is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_action",
+                "question": None,
+                "readiness": None,
+                "next_actions": [
+                    {"id": "discover_leagues", "command": "fwr onboard --json", "safe": True}
+                ],
+            }
+        )
+    if settings.active_draft_session is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_action",
+                "question": None,
+                "readiness": None,
+                "next_actions": [
+                    {
+                        "id": "sync_draft",
+                        "command": "fwr setup --non-interactive --json",
+                        "safe": True,
+                    }
+                ],
+            }
+        )
+    session = settings.active_draft_session
+    if session.context_type == "standalone" and settings.draft_configuration_context is None:
+        choices = [
+            {
+                "id": context.league_id,
+                "name": context.league_id,
+                "season": context.season,
+            }
+            for context in sorted(
+                settings.league_contexts.values(), key=lambda item: item.league_id
+            )
+            if context.season == session.season
+        ]
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "readiness": None,
+                "next_actions": [],
+                "question": {
+                    "id": "scoring_context_league",
+                    "prompt": (
+                        "Which saved Sleeper league should provide scoring context for this "
+                        "standalone mock?"
+                    ),
+                    "choices": choices,
+                    "command": (
+                        f"fwr drafts connect {session.draft_id} "
+                        "--scoring-context-league-id LEAGUE_ID --json"
+                    ),
+                },
+            }
+        )
+    if settings.intelligence_mode is None:
+        return _validated_agent_state(
+            {
+                **base,
+                "state": "needs_input",
+                "readiness": None,
+                "next_actions": [],
+                "question": {
+                    "id": "intelligence_mode",
+                    "prompt": "Which setup mode do you want?",
+                    "choices": [
+                        {
+                            "id": "quick",
+                            "name": "Quick",
+                            "description": "Automatically acquired portable public market data",
+                        },
+                        {
+                            "id": "personalized",
+                            "name": "Personalized",
+                            "description": (
+                                "Quick mode with strategy customization reserved for the "
+                                "next milestone"
+                            ),
+                        },
+                        {
+                            "id": "advanced",
+                            "name": "Advanced",
+                            "description": "User-supplied rankings and exact-scoring projections",
+                        },
+                    ],
+                },
+            }
+        )
+    ready = readiness(settings, repository_root=REPOSITORY_ROOT)
+    actions: list[dict[str, Any]] = []
+    checks = {item["name"]: item for item in ready["checks"]}
+    if checks["player_directory"]["status"] != "pass":
+        actions.append({"id": "sync_players", "command": "fwr players sync --json", "safe": True})
+    required_missing = [
+        item for item in ready["checks"] if item["required"] and item["status"] == "fail"
+    ]
+    if settings.intelligence_mode == "advanced":
+        if checks["compatible_ranking"]["status"] != "pass":
+            return _validated_agent_state(
+                {
+                    **base,
+                    "state": "needs_input",
+                    "question": {
+                        "id": "advanced_rankings",
+                        "prompt": (
+                            "Which compatible ranking file and source metadata should FWR import?"
+                        ),
+                        "choices": [
+                            {"id": "quick", "name": "Switch to Quick"},
+                            {"id": "personalized", "name": "Switch to Personalized"},
+                        ],
+                        "required_fields": [
+                            "path",
+                            "source",
+                            "source_version",
+                            "season",
+                            "scoring",
+                            "league_size",
+                        ],
+                        "command": (
+                            "fwr rankings import PATH --source SOURCE --source-version VERSION "
+                            "--season SEASON --scoring SCORING --league-size TEAMS --json"
+                        ),
+                    },
+                    "readiness": ready,
+                    "next_actions": [],
+                }
+            )
+        if checks["compatible_projection"]["status"] != "pass":
+            return _validated_agent_state(
+                {
+                    **base,
+                    "state": "needs_input",
+                    "question": {
+                        "id": "advanced_projections",
+                        "prompt": "Which projection file and source metadata should FWR import?",
+                        "choices": [
+                            {"id": "quick", "name": "Switch to Quick"},
+                            {"id": "personalized", "name": "Switch to Personalized"},
+                        ],
+                        "required_fields": ["path", "season", "source_version"],
+                        "command": (
+                            "fwr projections import-cbs PATH --season SEASON "
+                            "--source-version VERSION --json"
+                        ),
+                    },
+                    "readiness": ready,
+                    "next_actions": [],
+                }
+            )
+    if settings.intelligence_mode in {"quick", "personalized"} and any(
+        item["name"] in {"compatible_adp", "compatible_market_board"} for item in required_missing
+    ):
+        actions.append(
+            {
+                "id": "refresh_public_intelligence",
+                "command": "fwr data refresh --json",
+                "safe": True,
+            }
+        )
+    if ready["ready"] and checks["codex_mcp_configuration"]["status"] != "pass":
+        actions.append(
+            {
+                "id": "configure_mcp",
+                "command": "fwr mcp configure --client CLIENT --json",
+                "safe": True,
+            }
+        )
+    if not ready["ready"] and not actions:
+        session = settings.active_draft_session
+        command = (
+            f"fwr sync --draft-id {session.draft_id} --json"
+            if session is not None
+            else "fwr onboard --json"
+        )
+        actions.append({"id": "refresh_active_draft", "command": command, "safe": True})
+    return _validated_agent_state(
+        {
+            **base,
+            "state": "ready" if ready["ready"] else "needs_action",
+            "question": None,
+            "readiness": ready,
+            "next_actions": actions,
+        }
+    )
+
+
+def _validated_agent_state(result: dict[str, Any]) -> dict[str, Any]:
+    state = result.get("state")
+    if state == "needs_input" and not isinstance(result.get("question"), dict):
+        raise RuntimeError("needs_input onboarding state requires a structured question")
+    if state == "needs_action" and not result.get("next_actions"):
+        raise RuntimeError("needs_action onboarding state requires at least one next action")
+    if state == "ready":
+        readiness_value = result.get("readiness")
+        if not isinstance(readiness_value, dict) or not readiness_value.get("ready"):
+            raise RuntimeError("ready onboarding state requires complete readiness")
+    return result
+
+
+def _with_intelligence_mode(settings: Any, mode: IntelligenceMode) -> Any:
+    contexts = dict(settings.league_contexts)
+    context = settings.draft_configuration_context
+    if context is not None:
+        contexts[context.league_id] = context.model_copy(
+            update={
+                "recommendation_model": (
+                    "baseline-1.0" if mode == "advanced" else "portable-market-1.0"
+                ),
+                "ranking_source": context.ranking_source if mode == "advanced" else None,
+                "strategy": None if mode in {"quick", "personalized"} else context.strategy,
+            }
+        )
+    return settings.model_copy(
+        update={"intelligence_mode": mode, "league_contexts": contexts, "strategy": None}
+    )
+
+
+@app.command("status")
+def status_command(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Report unified account, draft-session, intelligence, strategy, and MCP status."""
+    _run(
+        "status",
+        json_output,
+        lambda: _agent_status(load_settings()),
+        lambda value: stdout.print(value),
+    )
+
+
+@app.command("onboard")
+def onboard_command(
+    username: str | None = typer.Option(None, "--username"),
+    league_id: str | None = typer.Option(None, "--league-id"),
+    mode: str | None = typer.Option(None, "--mode"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Advance or inspect the deterministic agent-oriented setup state machine."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(sleeper_username=username)
+        if mode is not None:
+            if mode not in {"quick", "personalized", "advanced"}:
+                raise InputError(
+                    "invalid_intelligence_mode", "--mode must be quick, personalized, or advanced"
+                )
+            settings = _with_intelligence_mode(settings, cast(IntelligenceMode, mode))
+            save_settings(settings)
+        if not settings.sleeper_username:
+            return _agent_status(settings)
+        if (
+            settings.active_draft_session is None and settings.active_context is None
+        ) or league_id is not None:
+            client = _client(settings)
+            try:
+                user, leagues = discover_leagues(client, settings.sleeper_username, settings.season)
+                account = for_resolved_sleeper_user(
+                    settings,
+                    user_id=str(user["user_id"]),
+                    username=str(user.get("username") or settings.sleeper_username),
+                )
+                choices = [league.model_dump(mode="json") for league in leagues]
+                selected = (
+                    choose_league_id(
+                        [league.league_id for league in leagues],
+                        league_id,
+                        non_interactive=True,
+                    )
+                    if league_id or len(leagues) <= 1
+                    else None
+                )
+                if selected is None:
+                    save_settings(account)
+                    return _validated_agent_state(
+                        {
+                            **_agent_status(account),
+                            "state": "needs_input",
+                            "next_actions": [],
+                            "question": {
+                                "id": "league",
+                                "prompt": "Which Sleeper league do you want to use?",
+                                "choices": choices,
+                            },
+                        }
+                    )
+                configured = with_league_context(
+                    account, league_id=selected, season=settings.season
+                )
+                if configured.intelligence_mode is not None:
+                    configured = _with_intelligence_mode(configured, configured.intelligence_mode)
+                ensure_directories(configured)
+                repository = IntelligenceRepository(configured.db_path)
+                snapshot, _ = sync_draft(client, repository, selected)
+                sync_players(client, repository, Path(app_dirs().user_cache_dir))
+                slot = resolve_setup_draft_slot(snapshot, configured.sleeper_user_id)
+                configured = with_active_draft_session(
+                    configured,
+                    draft_id=snapshot.draft_id,
+                    context_type="league",
+                    season=configured.season,
+                    source_league_id=selected,
+                    scoring_context_league_id=selected,
+                    draft_slot=slot,
+                )
+                save_settings(configured)
+                settings = configured
+            finally:
+                client.close()
+        return _agent_status(settings)
+
+    _run("onboard", json_output, operation, lambda value: stdout.print(value))
+
+
+@data_app.command("bootstrap")
+def data_bootstrap_command(
+    force: bool = typer.Option(False, "--force"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Acquire compatible public intelligence for the active league."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        ensure_directories(settings)
+        return bootstrap_data(
+            settings,
+            cache_dir=Path(app_dirs().user_cache_dir),
+            repository_root=REPOSITORY_ROOT,
+            force=force,
+        )
+
+    def render(result: dict[str, Any]) -> None:
+        stdout.print(
+            f"Active league {result['active_league_id']}: "
+            f"{result['format']['league_size']}-team "
+            f"{result['format']['scoring_format']} {result['format']['draft_type']}"
+        )
+        for name, source in result["sources"].items():
+            stdout.print(
+                f"{name}: {source['status']} — {source.get('provider', source.get('message'))}"
+            )
+        stdout.print(
+            "Recommendation readiness: "
+            + ("READY" if result["recommendation_ready"] else "NOT READY")
+        )
+
+    _run("data bootstrap", json_output, operation, render)
+
+
+@data_app.command("refresh")
+def data_refresh_command(
+    force: bool = typer.Option(False, "--force"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Refresh portable public intelligence for the active league."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings(db_path=db_path)
+        ensure_directories(settings)
+        client = _client(settings)
+        try:
+            player, created, source = sync_players(
+                client,
+                IntelligenceRepository(settings.db_path),
+                Path(app_dirs().user_cache_dir),
+                force=force,
+            )
+        finally:
+            client.close()
+        result = bootstrap_data(
+            settings,
+            cache_dir=Path(app_dirs().user_cache_dir),
+            repository_root=REPOSITORY_ROOT,
+            force=force,
+        )
+        result["sources"]["player_directory"] = {
+            "status": "acquired" if created else "unchanged",
+            "provider": "sleeper",
+            "snapshot_id": player.snapshot_id,
+            "source": source,
+        }
+        return result
+
+    _run("data refresh", json_output, operation, _render_data_refresh)
+
+
+def _render_data_refresh(result: dict[str, Any]) -> None:
+    sources = result["sources"]
+
+    def state(source: dict[str, Any]) -> str:
+        status = str(source["status"])
+        if status in {"acquired", "unchanged", "current", "derived"}:
+            return "ready"
+        error = source.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return f"FAILED — {error['message']}"
+        return status
+
+    player = sources["player_directory"]
+    adp = sources["adp"]
+    schedule = sources["team_schedule"]
+    board = adp.get("market_board")
+    stdout.print(f"Sleeper players: {state(player)}")
+    stdout.print(f"FFC ADP: {state(adp)}")
+    stdout.print(
+        "Portable market board: " + (state(board) if isinstance(board, dict) else "unavailable")
+    )
+    stdout.print(f"nflverse schedule: {state(schedule)}")
+    stdout.print(
+        "Recommendation readiness: " + ("READY" if result["recommendation_ready"] else "NOT READY")
+    )
+
+
+@data_app.command("status")
+def data_status_command(
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Report compatible local intelligence and recommendation readiness."""
+    _run(
+        "data status",
+        json_output,
+        lambda: data_status(load_settings(db_path=db_path), repository_root=REPOSITORY_ROOT),
+        lambda result: stdout.print(result),
+    )
 
 
 @adp_app.command("import")
@@ -551,6 +1028,16 @@ def setup_command(
         finally:
             client.close()
         slot = resolve_setup_draft_slot(snapshot, configured.sleeper_user_id)
+        configured = with_active_draft_session(
+            configured,
+            draft_id=snapshot.draft_id,
+            context_type="league",
+            season=configured.season,
+            source_league_id=selected,
+            scoring_context_league_id=selected,
+            draft_slot=slot,
+        )
+        save_settings(configured)
         ready = readiness(configured, repository_root=REPOSITORY_ROOT)
         return {
             "schema_version": "1.0",
@@ -612,14 +1099,20 @@ def leagues_use(league_id: str, json_output: bool = typer.Option(False, "--json"
                 "League context is not saved; run fwr setup --league-id first",
                 {"league_id": league_id, "available_league_ids": sorted(settings.league_contexts)},
             )
-        selected = settings.model_copy(
-            update={
-                "active_league_id": league_id,
-                "sleeper_league_id": league_id,
-                "season": context.season,
-                "strategy": None,
-            }
-        )
+        updates: dict[str, Any] = {
+            "active_league_id": league_id,
+            "sleeper_league_id": league_id,
+            "season": context.season,
+            "strategy": None,
+        }
+        if league_id != settings.active_league_id:
+            updates.update(
+                {
+                    "active_draft_session": None,
+                    "active_draft_session_invalidated": True,
+                }
+            )
+        selected = settings.model_copy(update=updates)
         save_settings(selected)
         return context_data(selected)
 
@@ -662,6 +1155,170 @@ def codex_configure(json_output: bool = typer.Option(False, "--json")) -> None:
         lambda: generate_codex_config(load_settings(), repository_root=REPOSITORY_ROOT),
         lambda result: stdout.print(f"Wrote {result['path']}. Restart Codex in this repository."),
     )
+
+
+@mcp_app.command("configure")
+def mcp_configure(
+    client: str = typer.Option(..., "--client"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Configure Codex or Claude Code from the same resolved launch specification."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        if client == "codex":
+            return {
+                "client": client,
+                **generate_codex_config(settings, repository_root=REPOSITORY_ROOT),
+            }
+        if client != "claude":
+            raise InputError("unsupported_mcp_client", "--client must be codex or claude")
+        spec = resolve_mcp_launch_spec(settings, repository_root=REPOSITORY_ROOT)
+        command = [
+            "claude",
+            "mcp",
+            "add",
+            "--scope",
+            "local",
+            "--transport",
+            "stdio",
+            "fantasy-war-room",
+            "--",
+            spec.executable,
+            *spec.arguments,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=spec.working_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise ConfigurationError(
+                "claude_cli_not_found",
+                "Claude Code CLI is not installed or not on PATH",
+                {"command": command},
+            ) from exc
+        if completed.returncode != 0:
+            raise ConfigurationError(
+                "claude_mcp_configuration_failed",
+                "Claude Code could not register the FWR MCP server",
+                {"stderr": completed.stderr.strip(), "command": command},
+            )
+        return {"client": client, **spec.__dict__, "configured": True, "command": command}
+
+    _run(
+        "mcp configure",
+        json_output,
+        operation,
+        lambda result: stdout.print(f"Configured {result['client']}. Restart the client."),
+    )
+
+
+def _draft_id_from_selector(value: str) -> str:
+    candidate = value.strip().rstrip("/")
+    if "://" in candidate:
+        match = re.search(r"/draft/(?:nfl/)?([A-Za-z0-9_-]+)(?:/|$)", candidate)
+        if match is None:
+            raise InputError("invalid_draft_url", "Sleeper draft URL does not contain a draft ID")
+        return match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", candidate):
+        raise InputError("invalid_draft_id", "Draft ID contains unsupported characters")
+    return candidate
+
+
+@drafts_app.command("connect")
+def drafts_connect(
+    draft_or_url: str,
+    scoring_context_league_id: str | None = typer.Option(None, "--scoring-context-league-id"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Synchronize and select one exact Sleeper draft or mock."""
+
+    def operation() -> dict[str, Any]:
+        settings = load_settings()
+        draft_id = _draft_id_from_selector(draft_or_url)
+        ensure_directories(settings)
+        client = _client(settings)
+        discovered_contexts: list[dict[str, Any]] = []
+        try:
+            snapshot, created = sync_by_draft_id(
+                client, SnapshotRepository(settings.db_path), draft_id, scoring_context_league_id
+            )
+            draft_season = str(snapshot.draft.get("season") or settings.season)
+            if (
+                snapshot.draft_context_type == "standalone"
+                and snapshot.scoring_context is None
+                and settings.sleeper_user_id is not None
+            ):
+                discovered_contexts = client.get_user_leagues(
+                    settings.sleeper_user_id, draft_season
+                )
+        finally:
+            client.close()
+        slot = resolve_setup_draft_slot(snapshot, settings.sleeper_user_id)
+        season = draft_season
+        if snapshot.scoring_context_league_id is not None:
+            settings = with_scoring_context(
+                settings,
+                league_id=snapshot.scoring_context_league_id,
+                season=season,
+            )
+            if settings.intelligence_mode is not None:
+                settings = _with_intelligence_mode(settings, settings.intelligence_mode)
+        selected = with_active_draft_session(
+            settings,
+            draft_id=draft_id,
+            context_type=cast(Any, snapshot.draft_context_type),
+            season=season,
+            source_league_id=snapshot.source_league_id,
+            scoring_context_league_id=snapshot.scoring_context_league_id,
+            draft_slot=slot,
+        )
+        save_settings(selected)
+        if snapshot.draft_context_type == "standalone" and snapshot.scoring_context is None:
+            choices_by_id: dict[str, dict[str, Any]] = {
+                item.league_id: {
+                    "id": item.league_id,
+                    "name": item.league_id,
+                    "season": item.season,
+                }
+                for item in settings.league_contexts.values()
+                if item.season == season
+            }
+            for league in discovered_contexts:
+                choice_id = str(league["league_id"])
+                choices_by_id[choice_id] = {
+                    "id": choice_id,
+                    "name": str(league.get("name") or choice_id),
+                    "teams": int(league.get("total_rosters") or 0),
+                    "season": str(league.get("season") or season),
+                }
+            choices = [choices_by_id[key] for key in sorted(choices_by_id)]
+            return {
+                "schema_version": "1.0",
+                "state": "needs_input",
+                "active_session": selected.active_draft_session,
+                "question": {
+                    "id": "scoring_context_league",
+                    "prompt": (
+                        "Which saved league should provide scoring context for this "
+                        "standalone mock?"
+                    ),
+                    "choices": choices,
+                },
+                "created": created,
+            }
+        return {
+            "schema_version": "1.0",
+            "state": "connected",
+            "created": created,
+            "active_session": selected.active_draft_session,
+        }
+
+    _run("drafts connect", json_output, operation, lambda result: stdout.print(result))
 
 
 @app.command()
@@ -762,8 +1419,21 @@ def watch(
     if league_id and draft_id:
         raise typer.BadParameter("supply either --league-id or --draft-id, not both")
     settings = load_settings(sleeper_league_id=league_id, poll_seconds=interval, db_path=db_path)
+    session = settings.active_draft_session
+    session_compatible, session_error = active_session_compatibility(settings)
+    if session is not None and not session_compatible:
+        raise typer.BadParameter(
+            session_error or "active draft session is incompatible with the selected league"
+        )
+    if draft_id is None and league_id is None and settings.active_draft_session_invalidated:
+        raise typer.BadParameter(
+            "the previous draft session was invalidated; run fwr onboard before watching"
+        )
+    if draft_id is None and league_id is None and session is not None:
+        draft_id = session.draft_id
+        scoring_context_league_id = session.scoring_context_league_id
     if not draft_id and not settings.sleeper_league_id:
-        raise typer.BadParameter("a league ID is required")
+        raise typer.BadParameter("an active draft session, --draft-id, or --league-id is required")
     repository = SnapshotRepository(settings.db_path)
     client = _client(settings)
     try:
@@ -1135,12 +1805,82 @@ def board(
     _run("board", json_output, operation, lambda result: render_board(result["players"]))
 
 
+@app.command("survival")
+def survival_command(
+    player_ids: list[str] = typer.Option(..., "--player-id"),
+    draft_id: str | None = typer.Option(None, "--draft-id"),
+    draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
+    simulations: int = typer.Option(5_000, "--simulations", min=1, max=100_000),
+    seed: int = typer.Option(0, "--seed", min=0, max=2**64 - 1),
+    model: SurvivalModelVersion = typer.Option("adp-only-1.0", "--survival-model"),
+    adp_source: str | None = typer.Option(None, "--adp-source"),
+    as_of: str | None = typer.Option(None, "--as-of"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Simulate whether passed candidates remain available at the target user pick."""
+
+    def operation() -> Any:
+        if not 1 <= len(player_ids) <= 20:
+            raise InputError(
+                "invalid_player_count", "survival requires between 1 and 20 --player-id values"
+            )
+        settings = load_settings(db_path=db_path)
+        at = parse_timestamp(as_of) if as_of else datetime.now(UTC)
+        return build_survival_response(
+            IntelligenceRepository(settings.db_path),
+            at,
+            draft_id=draft_id,
+            league_id=None if draft_id else settings.sleeper_league_id,
+            sleeper_user_id=settings.sleeper_user_id,
+            draft_slot=draft_slot,
+            candidate_player_ids=tuple(player_ids),
+            simulation_count=simulations,
+            seed=seed,
+            model_version=model,
+            adp_source=adp_source,
+        )
+
+    _run("survival", json_output, operation, render_survival)
+
+
+@app.command("survival-evaluate")
+def survival_evaluate_command(
+    draft_id: str = typer.Option(..., "--draft-id"),
+    draft_slot: int = typer.Option(..., "--draft-slot", min=1),
+    simulations: int = typer.Option(5_000, "--simulations", min=1, max=100_000),
+    seed: int = typer.Option(0, "--seed", min=0, max=2**64 - 1),
+    adp_source: str | None = typer.Option(None, "--adp-source"),
+    ranking_source: str | None = typer.Option(None, "--source"),
+    db_path: Path | None = typer.Option(None, "--db-path"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare existing survival models against completed local draft history."""
+
+    def operation() -> Any:
+        settings = load_settings(db_path=db_path)
+        effective = resolve_effective_draft_configuration(settings)
+        selected_model = effective.recommendation_model or "baseline-1.0"
+        return evaluate_historical_survival(
+            IntelligenceRepository(settings.db_path),
+            draft_id=draft_id,
+            draft_slot=draft_slot,
+            seed=seed,
+            simulation_count=simulations,
+            adp_source=adp_source,
+            ranking_source=ranking_source or effective.ranking_source,
+            recommendation_model=selected_model,
+        )
+
+    _run("survival-evaluate", json_output, operation, render_survival_evaluation)
+
+
 @app.command("recommend")
 def recommend_command(
     draft_id: str | None = typer.Option(None, "--draft-id"),
     draft_slot: int | None = typer.Option(None, "--draft-slot", min=1),
     source: str | None = typer.Option(None, "--source"),
-    model: RecommendationModelVersion = typer.Option("baseline-1.0", "--model"),
+    model: RecommendationModelVersion | None = typer.Option(None, "--model"),
     strategy: str | None = typer.Option(None, "--strategy"),
     limit: int = typer.Option(10, "--limit", min=1),
     as_of: str | None = typer.Option(None, "--as-of"),
@@ -1158,14 +1898,16 @@ def recommend_command(
         selected_model = (
             profile.required_raw_model
             if strategy is not None and profile is not None
-            else (effective.recommendation_model if model == "baseline-1.0" else model)
+            else (
+                model or ("baseline-1.0" if source is not None else effective.recommendation_model)
+            )
         )
         selected_source = source or (
             profile.required_ranking_source
             if strategy is not None and profile is not None
             else effective.ranking_source
         )
-        if profile is not None and model != "baseline-1.0" and model != profile.required_raw_model:
+        if profile is not None and model is not None and model != profile.required_raw_model:
             raise InputError(
                 "strategy_model_conflict",
                 "Explicit recommendation model conflicts with the strategy profile",

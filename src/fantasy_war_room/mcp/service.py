@@ -6,11 +6,14 @@ from typing import Any, cast
 from fantasy_war_room.decision.models import (
     CandidateExplanation,
     OffensivePosition,
+    PortableMarketRecommendationInputs,
+    PortableMarketRecommendationResult,
     RecommendationModelVersion,
     RecommendationPlayerInput,
     RecommendationResult,
 )
-from fantasy_war_room.decision.recommend import recommend
+from fantasy_war_room.decision.recommend import recommend, recommend_portable_market
+from fantasy_war_room.decision.survival_models import SurvivalModelVersion
 from fantasy_war_room.errors import InputError, NotFoundError
 from fantasy_war_room.identity import alias_targets, normalize_name, strict_name
 from fantasy_war_room.market import build_market_context, build_opponent_demand
@@ -20,6 +23,7 @@ from fantasy_war_room.strategy.adjust import apply_strategy, validate_strategy_c
 from fantasy_war_room.strategy.load import profile_hash
 from fantasy_war_room.strategy.models import StrategyProfile
 from fantasy_war_room.strategy.presentation import limit_strategy_result
+from fantasy_war_room.survival import survival_response
 
 POSITIONS: tuple[OffensivePosition, ...] = ("QB", "RB", "WR", "TE")
 
@@ -56,6 +60,23 @@ class DraftCopilotService:
         limit: int,
         as_of: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        selected_model = model or self.default_model
+        if selected_model == "portable-market-1.0":
+            if self.strategy_profile is not None:
+                raise InputError(
+                    "strategy_model_incompatible",
+                    "Configured strategy requires a projection-backed recommendation model",
+                )
+            portable_result, snapshot, _ = self._portable_context(as_of)
+            if not portable_result.candidates:
+                raise InputError(
+                    "insufficient_market_depth",
+                    "No available players have resolved compatible FFC market data",
+                )
+            data = portable_result.model_dump(mode="json")
+            data["candidates"] = data["candidates"][:limit]
+            data["draft"] = _draft_identity(snapshot)
+            return data, _portable_provenance(portable_result)
         result, snapshot, inputs, market, demand = self._market_context(
             model=model, source=source, as_of=as_of
         )
@@ -87,6 +108,30 @@ class DraftCopilotService:
     def get_opponent_demand(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         result, _, _, market, demand = self._market_context(model=None, source=None, as_of=as_of)
         return demand.model_dump(mode="json"), _market_provenance(result, market)
+
+    def simulate_next_pick_survival(
+        self,
+        *,
+        canonical_player_ids: list[str],
+        simulation_count: int,
+        seed: int,
+        model: SurvivalModelVersion,
+        as_of: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        at = _decision_time(as_of)
+        inputs, provenance = self.repository.read_survival(
+            at,
+            draft_id=self.draft_id,
+            sleeper_user_id=self.sleeper_user_id,
+            draft_slot=self.draft_slot,
+            candidate_player_ids=tuple(canonical_player_ids),
+            simulation_count=simulation_count,
+            seed=seed,
+            model_version=model,
+            adp_source=self.default_adp_source,
+        )
+        response = survival_response(inputs, cast(dict[str, Any], provenance))
+        return response.model_dump(mode="json"), response.provenance
 
     def get_draft_strategy(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         if self.strategy_profile is None:
@@ -121,19 +166,18 @@ class DraftCopilotService:
         }, _market_provenance(result, market)
 
     def get_draft_state(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
-        result, snapshot, inputs = self._context(model=None, source=None, as_of=as_of)
-        player_names = {
-            player.canonical_player_id: player.player_name for player in inputs.projected_players
-        }
+        decision_at = _decision_time(as_of) or datetime.now(UTC)
+        snapshot = self.repository.read_draft_state(decision_at, draft_id=self.draft_id)
+        settings = snapshot.draft.get("settings")
+        team_count = int(settings.get("teams") or 0) if isinstance(settings, dict) else 0
+        slot = self.draft_slot
+        if slot is None:
+            order = snapshot.draft.get("draft_order")
+            if self.sleeper_user_id and isinstance(order, dict) and self.sleeper_user_id in order:
+                slot = int(order[self.sleeper_user_id])
         recent: list[dict[str, Any]] = []
-        canonical_by_sleeper = {
-            pick.sleeper_player_id: pick.canonical_player_id
-            for pick in inputs.completed_picks
-            if pick.sleeper_player_id is not None
-        }
         for pick in sorted(snapshot.picks, key=lambda row: int(row.get("pick_no") or 0))[-10:]:
             sleeper_id = str(pick.get("player_id")) if pick.get("player_id") is not None else None
-            canonical_id = canonical_by_sleeper.get(sleeper_id)
             metadata = cast(
                 dict[str, Any],
                 pick.get("metadata") if isinstance(pick.get("metadata"), dict) else {},
@@ -147,22 +191,45 @@ class DraftCopilotService:
                     "round": pick.get("round"),
                     "draft_slot": pick.get("draft_slot"),
                     "sleeper_player_id": sleeper_id,
-                    "canonical_player_id": canonical_id,
-                    "player_name": player_names.get(canonical_id or "") or source_name or None,
+                    "canonical_player_id": None,
+                    "player_name": source_name or None,
                 }
             )
-        turn = result.turn_context.model_dump(mode="json")
+        next_pick = len(snapshot.picks) + 1
+        current_round = ((next_pick - 1) // team_count + 1) if team_count else None
+        current_slot = None
+        if team_count and current_round is not None:
+            within = (next_pick - 1) % team_count + 1
+            current_slot = within if current_round % 2 else team_count - within + 1
+        picks_until = None
+        if slot is not None and team_count:
+            for candidate in range(next_pick, next_pick + team_count * 2 + 1):
+                round_no = (candidate - 1) // team_count + 1
+                within = (candidate - 1) % team_count + 1
+                candidate_slot = within if round_no % 2 else team_count - within + 1
+                if candidate_slot == slot:
+                    picks_until = candidate - next_pick
+                    break
         data = {
             **_draft_identity(snapshot),
-            **turn,
-            "user_slot": turn["draft_slot"],
-            "picks_until_next_user_selection": turn["opponent_picks_before_next_user_pick"],
+            "team_count": team_count,
+            "current_pick": next_pick,
+            "current_round": current_round,
+            "current_draft_slot": current_slot,
+            "user_slot": slot,
+            "picks_until_next_user_selection": picks_until,
             "recent_completed_picks": recent,
-            "unresolved_pick_count": len(
-                [pick for pick in result.current_roster.unmodeled_player_ids]
+            "completed_pick_count": len(snapshot.picks),
+            "unresolved_pick_count": sum(
+                1 for pick in snapshot.picks if pick.get("player_id") is None
             ),
         }
-        return data, _provenance(result)
+        return data, {
+            "draft_snapshot_id": snapshot.snapshot_id,
+            "draft_observed_at": snapshot.observed_at.isoformat(),
+            "decision_at": decision_at.isoformat(),
+            "intelligence_required": False,
+        }
 
     def get_my_roster(self, *, as_of: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
         result, _, inputs = self._context(model=None, source=None, as_of=as_of)
@@ -220,6 +287,24 @@ class DraftCopilotService:
         limit: int,
         as_of: str | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if self.default_model == "portable-market-1.0":
+            portable_result, _, _ = self._portable_context(as_of)
+            portable_candidates = [
+                candidate
+                for candidate in portable_result.candidates
+                if position is None or candidate.position == position
+            ]
+            return {
+                "position": position,
+                "projection_backed": False,
+                "recommendation_model_version": portable_result.recommendation_model_version,
+                "players": [
+                    {**candidate.model_dump(mode="json"), "availability": "available"}
+                    for candidate in portable_candidates[:limit]
+                ],
+                "excluded_candidate_counts": portable_result.excluded_candidate_counts,
+                "limitations": portable_result.limitations,
+            }, _portable_provenance(portable_result)
         result, _, _ = self._context(model=None, source=None, as_of=as_of)
         candidates = [
             candidate
@@ -421,6 +506,21 @@ class DraftCopilotService:
             ranking_source=source or self.default_source,
         )
 
+    def _portable_context(
+        self, as_of: str | None
+    ) -> tuple[
+        PortableMarketRecommendationResult,
+        Snapshot,
+        PortableMarketRecommendationInputs,
+    ]:
+        inputs, snapshot = self.repository.read_portable(
+            _decision_time(as_of),
+            draft_id=self.draft_id,
+            sleeper_user_id=self.sleeper_user_id,
+            draft_slot=self.draft_slot,
+        )
+        return recommend_portable_market(inputs), snapshot, inputs
+
 
 def _decision_time(value: str | None) -> datetime | None:
     if value is None:
@@ -452,6 +552,59 @@ def _provenance(result: RecommendationResult) -> dict[str, Any]:
         **result.provenance.model_dump(mode="json"),
         "decision_at": result.decision_at.isoformat(),
         "model_specification": result.model_specification.model_dump(mode="json"),
+    }
+
+
+def _portable_provenance(result: PortableMarketRecommendationResult) -> dict[str, Any]:
+    return {
+        **result.provenance.model_dump(mode="json"),
+        "decision_at": result.decision_at.isoformat(),
+        "recommendation_model_version": result.recommendation_model_version,
+        "projection_backed": False,
+    }
+
+
+def _portable_draft_state(
+    result: PortableMarketRecommendationResult,
+    snapshot: Snapshot,
+    inputs: PortableMarketRecommendationInputs,
+    player_names: dict[str, str],
+) -> dict[str, Any]:
+    canonical_by_sleeper = {
+        pick.sleeper_player_id: pick.canonical_player_id
+        for pick in inputs.completed_picks
+        if pick.sleeper_player_id is not None
+    }
+    recent: list[dict[str, Any]] = []
+    for pick in sorted(snapshot.picks, key=lambda row: int(row.get("pick_no") or 0))[-10:]:
+        sleeper_id = str(pick.get("player_id")) if pick.get("player_id") is not None else None
+        canonical_id = canonical_by_sleeper.get(sleeper_id) if sleeper_id is not None else None
+        metadata = cast(
+            dict[str, Any],
+            pick.get("metadata") if isinstance(pick.get("metadata"), dict) else {},
+        )
+        source_name = " ".join(
+            str(metadata.get(key) or "") for key in ("first_name", "last_name")
+        ).strip()
+        recent.append(
+            {
+                "pick_no": pick.get("pick_no"),
+                "round": pick.get("round"),
+                "draft_slot": pick.get("draft_slot"),
+                "sleeper_player_id": sleeper_id,
+                "canonical_player_id": canonical_id,
+                "player_name": player_names.get(canonical_id or "") or source_name or None,
+            }
+        )
+    turn = result.turn_context.model_dump(mode="json")
+    return {
+        **_draft_identity(snapshot),
+        **turn,
+        "user_slot": turn["draft_slot"],
+        "picks_until_next_user_selection": turn["opponent_picks_before_next_user_pick"],
+        "recent_completed_picks": recent,
+        "unresolved_pick_count": len(inputs.unresolved_roster_player_ids),
+        "projection_backed": False,
     }
 
 
